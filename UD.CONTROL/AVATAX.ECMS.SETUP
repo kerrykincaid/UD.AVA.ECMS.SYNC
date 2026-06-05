@@ -1,0 +1,82 @@
+**************************************************************************
+* AVATAX ECMS interface                                                  *
+**************************************************************************
+
+* enable / disable the ECMS interface
+    Enabled           =  Yes
+    RunCtrlRec        =  "UD.AVA.CTRL"
+
+* log settings
+    TimeLogDays       =  60
+    RunLogDays        =  30
+
+* Full sync time limit 21 hours
+    FullSyncRunLimit  =  75600
+* Partial sync time limit 10 hours
+    PartSyncRunLimit  =  36000
+
+* ECMS Sync
+*
+    TroubleShooting   =  No
+    TroubleShooting(eclipse-test) =  No
+    TroubleShooting(eclipse-dev)  =  No
+
+* If the previous sync time of the day is before this time (15300 is 4:15 am) run a full or partial sync.
+    *FullSyncPickTime  =  15300
+    FullSyncPickTime  =  27000
+    FullSyncPickTime(eclipse-test) = 27000
+    *FullSyncDayofWeek =  "SUN,SAT"
+    FullSyncDayofWeek =  "SUN,MON,TUE,WED,THU,FRI,SAT"
+    *PartSyncDayofWeek =  "MON,TUE,WED,THU,FRI"
+    PartSyncDayofWeek = ""
+* If more than this number of customers is selected for a Quick Sync, run a partial sync instead.
+    MaxCustSelected   =  1000
+    MaxCustSelected(eclipse-dev)   =  500
+
+* Customer select statements.  FULL, PARTIAL, QUICK, ALL
+    * Customers with Tax Exemptions listed.
+    FullSelectOne     =  'IS.CUSTOMER = "1" AND TAX_STATE_CODES_ALL NE "" AND TAX_EXP_NBR_ALL NE ""'
+
+    * Customers with either tax exemptions, or that have a record in UD_AVALARA_ID indicating a previous exemption.
+    * AND updated since $last.date$, before $next.date$, and after $last.time$.  $last.time$ only works when
+    * $last.date$ and $next.date$ are the same date.  Otherwise $last.time$ should be "1".
+    PartSelectOne     =  'IS.CUSTOMER = "1" AND (HAS_AVA_ID = "1" OR (TAX_STATE_CODES_ALL NE "" AND TAX_EXP_NBR_ALL NE "")) _
+                         AND UPDATED_DT >= "$last.date$" AND UPDATED_DT <= "$next.date$" AND UPDATED_TM > "$last.time$" '
+
+    * Customers with either tax exemptions, or that have a record in UD_AVALARA_ID indicating a previous exemption.
+    * AND updated since $last.date$, before $next.date$, and after $last.time$.  $last.time$ only works when
+    * $last.date$ and $next.date$ are the same date.  Otherwise $last.time$ should be "1".
+    QuikSelectOne     =  'IS.CUSTOMER = "1" AND (HAS_AVA_ID = "1" OR (TAX_STATE_CODES_ALL NE "" AND TAX_EXP_NBR_ALL NE "")) _
+                         AND UPDATED_DT >= "$last.date$" AND UPDATED_DT <= "$next.date$" AND UPDATED_TM > "$last.time$" '
+
+    * Last change to a field impacting taxes was after the last update's datetime.
+    QuikSelectTwo     =  'LAST.TAX.CHANGE >= $lastdatetime$ '
+
+    * All selects exclude Branches, excluded customers, Bill Tos, and anything with a Usage Type.  Sorts the results.
+    AllSSelectEnd     =  'IS_BR_ENTITY NE "1" AND NAME NE "XFER]" AND EXCL_FROM_INDEX NE "1" AND IS_SHIP_TO = "1" _
+                         AND AVALARA_USAGE_TYPE = "" BY ID_SORT'
+
+** How many days ago?  Customers edited X days ago will be selected for a Partial Sync.
+    PartialWindow     =  2
+
+* default branch for company id lookup.
+    DefaultBranch     =  "1000"
+
+* Certificate defaults.  When new certs are created we need an effective date.  Eclipse doesn't
+* require a effective date so we use this variable date to assign one.
+    var.eff.date      =  "FB/FB/YR"
+    *"-1/01/YR"
+    var.exp.date      =  "FB/FB/YR"
+    *"MO/DA/+4"
+    AvalaraDateFormat =  "D-YMD[Z4,2,2]"
+
+* Export record fields
+          *  Removed non-required comparisons:
+    CustomerFields    = "2,9,10,17,18,19,20,21,22,23,24"
+          *  Removed non-required comparisons: [13 is conditional] Removed 13,14 for Troubleshooting.
+    CertificateFields = "1,2,3,4,5,6,7,8,9,10,11,12,15,16"
+
+* New customer batch size.
+    NewCustBatchSize  =  4
+    QSNewCustBatchSize = 1
+

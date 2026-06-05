@@ -1,0 +1,126 @@
+    subroutine ud.avatax.deletecertificate (company.Id,cert.id,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  DeleteCertificate                   *
+**************************************************************************
+* cert.id            The cert.id to lookup.  no cert id returns all ids  *
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** Revoke and delete a certificate
+*** </summary>
+*** <remarks>
+*** Revoke the certificate identified by this URL, then delete it.
+***  
+*** A certificate is a document stored in either AvaTax Exemptions or CertCapture. The certificate document
+*** can contain information about a customer's eligibility for exemption from sales or use taxes based on
+*** criteria you specify when you store the certificate. To view or manage your certificates directly, please
+*** log onto the administrative website for the product you purchased.
+***  
+*** Revoked certificates can no longer be used.
+***  
+*** </remarks>
+*** <param name="companyId">The unique ID number of the company that recorded this certificate</param>
+*** <param name="id">The unique ID number of this certificate</param>
+*        public List<ErrorDetail> DeleteCertificate(Int32 companyId, Int32 id)
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+    
+    if cert.id & num(cert.id) {
+        buffer ("Cert ID ":cert.id:" to be deleted.")
+    }{
+        buffer ("Invalid Cert ID.")
+        finish
+    }
+
+    change(method, "$company.id$", company.id)
+    change(method, "$cert.id$",cert.id)
+    
+    buffer ("Method URL used is:  ":method)
+    
+    sub::ava.do.request (http.type,method,'',,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+    }
+    buffer (lower(resp))
+
+finish:    
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.DELETECERTIFICATE'
+    buffer.clear () 
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled     = :: ("Enabled", 0, 1)
+        lic.or      = :: ("License", 0, 1)
+        ctrl.id     = :: ("AvaTaxOptions")
+        default.br  = :: ("DefaultBranch")
+        method      = :: ("CertificateDelete")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    read settings from ctrlfile, ctrl.id }{
+        settings~~~
+    }
+    
+*  Variables
+    if unassigned(cert.id) {
+        cert.id     =   ''
+        * No Cert, no delete. 
+        finish
+    }
+    skip.reason~~~
+    http.type       =   'DELETE'
+ 
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    }  
+ return
+
+* checksum: 59226
+* last change: 10/11/2022 10:39:38am
+* last compile: 10/11/2022 10:39:38am

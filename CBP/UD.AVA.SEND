@@ -1,0 +1,86 @@
+          SUBROUTINE (PASSER)
+** Version# 119.0002[3] - 04/30/2019 - 03:37pm - KK05718 - eclipse
+*** V119.0002 Change - Custom Coding KK0571 - 04/30/2019 - KK05718 - eclipse
+** Copied from BP EMAIL.SEND Version# 119.0001 - 07/06/2018 - 01:35am - PRANAG - r8.6emr
+*** V119.0001 Change - Add FULL Ver 121 - 07/06/2018 - PRANAG - r8.6emr
+
+*** Subroutine - UD.AVA.SEND
+*-------------------------------------------------------------------------*
+*** User Display screen to send an email.  This routine fills out all
+*** info such as email address, attachments, carbon copies, and
+*** message.
+*-------------------------------------------------------------------------*
+*** Note on the To, Cc and Bcc email address inputs:
+*** If the user uses our "Dist List" screen, a VM del'm list will be
+*** passed back to this routine.  For this case, display "*Multi*" instead
+*** of the full list of users.  However, the user can also send a multi
+*** list by separating the address with either a comma or semicolon.
+*-------------------------------------------------------------------------*
+*** PASSER<1>  - Email Address
+*** PASSER<2>  - Customer Number (e.g. Entity ID)
+*** PASSER<3>  - Contact ID
+*** PASSER<4>  - Recipient Name
+*** PASSER<5>  - Subject
+*** PASSER<6>  - Attachment path
+*** PASSER<7>  - CC, Carbon Copies
+*** PASSER<8>  - BCC, Blind Carbon Copies
+*** PASSER<9>  - Flag to Send Attachment in Body
+*** PASSER<10> - Flag that EMAIL.DATA.GET will send the email
+***            - this is needed when sending attachments.
+***            - if this is explicitly NO_HTML_TEXT the body text will
+***            - be used by a trigger and should not be converted to
+***            - HTML
+*** PASSER<11> - Flag to not call user for prompt
+*** PASSER<12> - From Name (domain name will be system defined)
+***            - If not passed will default to @LOGNAME
+*** PASSER<13> - EMAIL.SEND cannot override attachment flag (PASSER<9>)
+*** PASSER<14> - this will be the
+***            - message keyed in by user if need to pass to other pgms.
+*** PASSER<15> - User BCC address for copies of EMAIL (from SEC-57)
+*** PASSER<16> - User BCC Subject Prefix (from SEC-58)
+*** PASSER<17> - ATTACHMENT path/key reference e.g. HOLD.FILE:nnnnn
+***            - for display in EMAIL.SEND options
+*** PASSER<18> - ATTACHMENT type - .txt (default), .html, .doc, .xls
+*** PASSER<19> - ATTACHMENT body type if sending attachment in Body
+*** PASSER<20> - Sending email as a company HTML template
+*** PASSER<21> - ATTACHMENT filename (optional, will default to
+*** PASSER<22> - File name of template to be used for sent email
+***            - USER.ID-###.TXT  where ### is a number starting at 100
+*** PASSER<23> - Type of Email sent from activity trigger (html,text)
+*** PASSER<24> - CC Recipient
+*** PASSER<25> - BCC Recipient
+*** O.BODY     - For passing Body - will be converted to vm for editing.
+*-------------------------------------------------------------------------*
+*** COMMON Variables:
+***       PHANTOM.PROC and JAVA.PROC$ are read but not changed
+*-------------------------------------------------------------------------*
+
+          ERR.MSG = ''
+
+          * If phantom or java, do not display error message
+          IF PHANTOM.PROC OR JAVA.PROC$ THEN
+             DISP.ERR = NO
+          END ELSE
+             DISP.ERR = YES
+          END
+
+          * check for auth
+          UT.SEC3 22,AUTH.OK,,DISP.ERR
+          IF NOT(AUTH.OK) THEN
+             ERR.MSG = 'Outbound Email is not authorized!'
+             RETURN
+          END
+
+
+          IF ERR.MSG THEN RETURN
+
+          EM.PASSER<1>         =  "taxadjustments@morsco.com"
+
+          SEND.MESSAGE 'Phantom','KK05718',PASSER
+
+          CMD = 'SELECT AR = "':PASSER:'"'
+
+
+
+          RETURN
+!KK05718~04/30/19~15:37

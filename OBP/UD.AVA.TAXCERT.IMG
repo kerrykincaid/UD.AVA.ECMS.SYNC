@@ -1,0 +1,136 @@
+    subroutine ud.ava.taxcert.img (cust.id, certnum, file.name)
+
+**************************************************************************
+* Review attached images, looking for an image on the TAXCERT Profile    *
+* that contains the current cert number as the description or original   *
+* file.name.  Return the current file.name to pass on to the AVATAX portal.*
+**************************************************************************
+* cust.id            The cust.id to lookup.  no cust id returns all ids  *
+* certnum            The certificate number to attempt to match          *
+* file.name           The returned file.name of actual file, or faux       *
+*                     name based on record.                              *
+*                                                                        *
+**************************************************************************
+
+    initialize
+
+    if not(cust.id) {
+        file.name = "FileNotFound"
+        finish
+    }
+    if num(cust.id) {
+        cmd =   'SELECT IMG.XREF WITH &INDEX&.XREFS = "E~':cust.id:'"' 
+        execute cmd capturing msg
+        trim(msg,am,'A')
+        cert.ct = field(msg,' ',1)
+        buffer (cert.ct:" images selected.")
+        selecte to imglist
+
+        x.id = each.next (imglist) {
+            
+            read img.rec from imx.file,x.id }{
+                img.rec =   ''
+            }
+            img.profile = img.rec<6>
+            if img.profile = cert.profile {
+                is.cert =   yes
+                img.desc = img.rec<1>
+                if img.desc = certnum or cert.ct = 1 {
+                    get.file.name
+                    exit
+                }{
+                    orig.file.name = img.rec<9>
+                    if orig.file.name = certnum {
+                        get.file.name
+                        exit
+                    }
+                }
+            }
+        }
+        
+        if file.name {
+            goto finish
+        }
+        file.name = "n/a"
+    }
+    
+finish: 
+    buffer ("filename is: ":file.name)
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date  =   date()
+    begin.time  =   int(time())
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        cert.profile    = :: ("CertProfile")
+    }
+    
+    manager =   new (file.manager)
+
+*  Variables
+    assign (cust.id)
+    assign (file.name)
+    assign (certnum)
+    cert.ct~
+    img.rec~~~
+    x.id~
+    pgm.name        =   'UD.AVA.TAXCERT.IMG'
+    
+    buffer ("PGM Name:  ":pgm.name)
+    
+    with manager::open {
+        
+        imx.file = :: ('IMG.XREF')
+        if have.error {
+            buffer (error.message)
+            goto finish
+        }
+        
+        ima.file = :: ('IMG.ARCHIVES')
+        if have.error {
+            buffer (error.message)
+            goto finish
+        }
+        
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer (error.message)
+            goto finish
+        }
+    }
+    buffer ("Files opened")
+ 
+ return
+***************************************************************************
+* get file.name from linking xref.
+***************************************************************************
+get.file.name:
+    storage.id  =   img.rec<7>
+!    print 'Storage ID:  ':storage.id
+    readv path from ima.file,storage.id,2 {
+        path    :=  "/"
+    }{
+        path~~~
+    }
+    file.name    =   path:x.id:".":img.rec<2>
+    
+    return
+
+* checksum: 60406
+* last change: 10/11/2022 10:39:55am
+* last compile: 10/11/2022 10:39:55am

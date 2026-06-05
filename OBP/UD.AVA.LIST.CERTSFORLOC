@@ -1,0 +1,147 @@
+    subroutine ud.ava.list.certsforloc (company.Id,cust.id,country,region,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  ListValidCertificatesForCustomer    *
+*
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* cust.id            The cust.id to lookup.                              *
+* country            The country code Two Character ISO 3166             *
+* region             The state/region.  Two char ISO 3166                *
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** List valid certificates for a location
+*** </summary>
+*** <remarks>
+*** List valid certificates linked to a customer in a particular country and region.
+***  
+*** This API is intended to help identify whether a customer has already provided a certificate that
+*** applies to a particular country and region. This API is intended to help you remind a customer
+*** when they have or have not provided copies of their exemption certificates to you during the sales
+*** order process.
+***  
+*** If a customer does not have a certificate on file and they wish to provide one, you should send the customer
+*** a CertExpress invitation link so that the customer can upload proof of their exemption certificate. Please
+*** see the `CreateCertExpressInvitation` API to create an invitation link for this customer.
+***  
+*** </remarks>
+*** <param name="companyId">The unique ID number of the company that recorded this customer</param>
+*** <param name="customerCode">The unique code representing this customer</param>
+*** <param name="country">Search for certificates matching this country. Uses the ISO 3166 two character country code.</param>
+*** <param name="region">Search for certificates matching this region. Uses the ISO 3166 two or three character state, region, or province code.</param>
+*        public ExemptionStatusModel ListValidCertificatesForCustomer(Int32 companyId, String customerCode, String country, String region)
+*        {
+*            var path = new AvaTaxPath("/api/v2/companies/{companyId}/customers/{customerCode}/certificates/{country}/{region}");
+*            path.ApplyField("companyId", companyId);
+*            path.ApplyField("customerCode", customerCode);
+*            path.ApplyField("country", country);
+*            path.ApplyField("region", region);
+*            return RestCall<ExemptionStatusModel>("GET", path, null);
+*        }
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+    
+    if cust.id & num(cust.id) {
+        method.mod  =   method.cust:method.exempt
+        change(method.mod, "$cust.id$",cust.id)
+        
+        buffer ("Customer ID ":cust.id:" used.  Added to url.")
+        buffer ("Certificate reporting.  ":country:", ":region)
+    }{
+        buffer ("Invalid customer id.")
+        finish
+    }
+    
+    change(method, "$company.id$", company.id)
+    method          =   method:method.mod
+    
+    buffer ("Method URL used is:  ":method)
+    
+    sub::ava.do.request (http.type,method,,params,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+        finish
+    }
+        
+finish:   
+    buffer (lower(resp))
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.LIST.CERTSFORLOC'
+    skip.reason~~~
+    buffer.clear ()    
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        lic.or          = :: ("License", 0, 1)
+        ctrl.id         = :: ("AvaTaxOptions")
+        method          = :: ("CustomersGetBase")
+        method.cust     = :: ("CustomersGetOne")
+        method.exempt   = :: ("CustomerExempt")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    method.mod~~~
+    read settings from ctrlfile, ctrl.id }{
+        return
+    }
+    
+*  Variables
+    assign (cust.id)
+    
+    http.type       =   'GET'
+        
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+
+* checksum: 61566
+* last change: 10/11/2022 10:39:49am
+* last compile: 10/11/2022 10:39:49am

@@ -1,0 +1,82 @@
+**************************************************************************
+* AVATAX API interface                                               *
+**************************************************************************
+
+* enable / disable the AVATAX interface
+    Enabled           = Yes
+* override license check on Systems.
+    License(eclipse-dev)  = Yes
+    License               = No
+
+* Control record ID containing AVALARA API standard settings.
+    AvaTaxOptions     = "AVALARA.OPTIONS"
+
+* Default Branch
+    DefaultBranch     = "1000"
+
+* API extra elements (Includes, caching)
+    GetCompanyIncl    = "Contacts,Items,Locations,Nexus,Settings,TaxCodes,TaxRules,UPC,Parameters"
+    GetCompCachSec    = "3601"
+    GetCompApiPgm     = "UD.AVA.QUERYCOMPANIES"
+
+* IMG.XREF filename lookup in Profile.
+    CertProfile       = "TAX_CERTS"
+
+* send a note to the debugging window for all logins
+    DebugLogins       = No
+
+* max response size in records.  record pagination.  Default is 100.
+    PageSize          = 500
+    RetryCount        = 5
+
+* methods by action.  Change $company.id$ to company.id obtained with UD.AVA.GET.COMPANY.ID
+    * method GET url.
+    * method.mod add '/cust.id' for one customer.
+    CustomersGetBase     = 'companies/$company.id$/customers'
+    CustomersGetOne      = '/$cust.id$'
+    CustomerCerts        = '/certificates'
+    CustomerAttributes   = '/attributes'
+    CustomerExempt       = '/$country$/$region$'
+    CustomerGetInclude   = 'certificates,attributes,customfields'
+    * method DELETE url.
+    CustomerDelete       = 'companies/$company.id$/customers/$cust.id$'
+    * method PUT url.
+    CustomerPutBase      = 'companies/$company.id$/customers'
+    CustomerUpdate       = '/$cust.id$'
+    CustomerLinkAtt      = '/attributes/link'
+    CustomerUnLinkAtt    = '/attributes/unlink'
+    * method POST url.
+    CustomerPostBase     = 'companies/$company.id$/customers'
+    CustomerLinkTwo      = '/billto/$cust.id$/shipto/link'
+    CustomerLinkCert     = '/$cust.id$/certificates/link'
+    CustomerUnLinkCert   = '/$cust.id$/certificates/unlink'
+
+    * method GET url.
+    CertsGetBase         = 'companies/$company.id$/certificates'
+    CertsGetOne          = '/$cert.id$'
+    CertsGetInclude      = 'customers,po_numbers,attributes'
+    * method DELETE url.
+    CertificateDelete    = 'companies/$company.id$/certificates/$cert.id$'
+    * method PUT url.
+    CertsPutBase         = 'companies/$company.id$/certificates/$cert.id$'
+    * method POST url.
+    CertsPostBase        = 'companies/$company.id$/certificates'
+    CertsAttach          = '/$cert.id$/attachment'
+    CertsAttLink         = '/$cert.id$/attributes/link'
+    CertsAttUnlink       = '/$cert.id$/attributes/unlink'
+    CertsCustLink        = '/$cert.id$/customers/link'
+    CertsCustUnlink      = '/$cert.id$/customers/unlink'
+    CertsSetup           = '/setup'
+
+    * Post options Certificates
+    PreValExemptReason   = Yes
+
+    * Definition API Calls
+    exposurezones        =   'definitions/certificateexposurezones'
+
+    * Nexus API Calls
+    NexusBase            = 'companies/$company.id$/nexus'
+    GetNexusCacheSec     = '3601'
+    NexusCacheCtrlRecord = 'UD.AVA.STATE.NEXUS'
+    GetNexusApiPgm       = 'UD.AVA.LIST.NEXUS.BY.COMP'
+    ListNexusIncl       = 'Parameters'

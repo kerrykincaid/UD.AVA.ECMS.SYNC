@@ -1,0 +1,488 @@
+    SUBROUTINE UD.AVA.PORT.CUSTS  (UPDFILENAME)
+** Version# 0.0001[80] - 09/20/25 - 05:06pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.PORT.CUSTS at 05:06pm 09/20/2025 by SF08*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.PORT.CUSTS         *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 32076
+* last change: 10/11/2022 10:39:52am
+* last compile: 10/11/2022 10:39:52am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* All GET methods will go through this sub.                              *
+**************************************************************************
+* updfilename        Filename of temporary file to write records into.   *
+**************************************************************************
+
+** Pull login credentials and base URL from Control Record.
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INITIALIZE
+    IF SKIP.REASON THEN 
+        ADD.OUTPUT.TEXT = (SKIP.REASON) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+* If data is paginated, we will return here for subsequent reads.
+
+    LOOP WHILE PAGE.CT <> 0 
+RETRYCALL:    
+        UD.AVA.QUERYCUSTOMERS COMPANY.ID, 'certificates', '', PAGE.SIZE, SKIP, '', RESP, ERR.MSG, LOG.ID, LOG.REC.ID
+        IF ERR.MSG THEN 
+            ADD.OUTPUT.TEXT = (ERR.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            IF RETRY.COUNT = 0 THEN 
+                ADD.OUTPUT.TEXT = (("Retries exhausted.":SPACE(2):"Exiting.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                EXIT
+            END ELSE 
+                RETRY.COUNT -= 1
+                ADD.OUTPUT.TEXT = (("Retry after error.":SPACE(2):("Retries remaining:":SPACE(2))):RETRY.COUNT) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                RESP = ''
+                SLEEP 3
+                GOSUB RETRYCALL
+            END 
+        END 
+        ADD.OUTPUT.TEXT = (("Page Count:":SPACE(2)):PAGE.CT) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+        *  Parse JSON.  First item is record count.    
+        UT.PARSE.JSON RESP, ITEMS, VALUES
+        OUTPUT.BUFFER := @AM ; OUTPUT.BUFFER.COUNT += 1 ;   * 4
+            
+        IF FIRST.CALL AND ITEMS<1> = "@recordsetCount" THEN 
+            * Set first.call to NO.
+            FIRST.CALL = @FALSE
+            REC.CT =   VALUES<1>
+            IF REC.CT > PAGE.SIZE THEN 
+                PAGE.CT = (REC.CT / PAGE.SIZE + .5) "R0"
+            END 
+        END 
+        IF ITEMS<3,1> = "@nextLink" THEN 
+            * There are multiple pages of data.  Get the next page ptr.
+            NEXT.PAGE = @TRUE
+            NEXTLINK    =   VALUES<3,1>
+        END 
+    *  Re-parse second item of JSON.  Contains array of customer objects.    
+        UT.PARSE.JSON VALUES<2>, NEW.ITEMS, NEW.VALUES
+        VALUES      =   NEW.VALUES
+    *  Loop through customer objects.  Parse each object.  
+        ADD.OUTPUT.TEXT = ("Page ct ":PAGE.CT:" of ":PAGE.SIZE:" records.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        FOR X = 1 TO PAGE.SIZE 
+            RECORD.ID = @FALSE
+            RECORD.DATA = @FALSE
+            
+            UT.PARSE.JSON NEW.ITEMS<X>, CUST.ITEMS, CUST.VALUES
+            PORT.ITEMS = (CUST.ITEMS)
+            PORT.VALUES = (CUST.VALUES)
+            PITEM.CT = DCOUNT(CUST.ITEMS,AM)
+            
+            FOR PITEM = 1 TO PITEM.CT 
+                PIT.NAME    = UPCASE (PORT.ITEMS<PITEM>)
+                PIT.VAL     = PORT.VALUES<PITEM>
+                BEGIN CASE 
+                    CASE PIT.NAME = "ID"
+                        * Store customer portal id in Att2.
+                        RECORD.DATA<2>  =   PIT.VAL
+                    CASE PIT.NAME = "COMPANYID"
+                        RECORD.DATA<9>  =   PIT.VAL
+                    CASE PIT.NAME = "CUSTOMERCODE"
+                        RECORD.ID   =   PIT.VAL
+                        RECORD.DATA<10>  =   PIT.VAL
+                    CASE PIT.NAME = "NAME"
+                        RECORD.DATA<17>  =   PIT.VAL
+                    CASE PIT.NAME = "LINE1"
+                        RECORD.DATA<18>  =   PIT.VAL
+                    CASE PIT.NAME = "LINE2"
+                        RECORD.DATA<19>  =   PIT.VAL
+                    CASE PIT.NAME = "LINE3"
+                        RECORD.DATA<20>  =   PIT.VAL
+                    CASE PIT.NAME = "CITY"
+                        RECORD.DATA<21>  =   PIT.VAL
+                    CASE PIT.NAME = "POSTALCODE"
+                        RECORD.DATA<23>  =   PIT.VAL
+                    CASE PIT.NAME = "CREATEDDATE"
+                        *record.data<8>  =   pit.val
+                    CASE PIT.NAME = "MODIFIEDDATE"
+                        *record.data<9>  =   pit.val
+                    CASE PIT.NAME = "COUNTRY"
+                        RECORD.DATA<24>  =   PIT.VAL
+                    CASE PIT.NAME = "REGION"
+                        RECORD.DATA<22>  =   PIT.VAL
+                    CASE PIT.NAME = "ISBILL"
+                        RECORD.DATA<25>  =   'Active'
+                        *pit.val
+                    CASE PIT.NAME = "ISSHIP"
+                        RECORD.DATA<26>  =   'Accepted'
+                        *pit.val
+                    CASE PIT.NAME = "CERTIFICATES"
+                        GOSUB PARSE.CERTIFICATES
+                    CASE OTHERWISE
+                        *record.data<10+pitem>   =   pit.val
+                        ADD.OUTPUT.TEXT = ("Skipped: ":PORT.ITEMS<PITEM>:" : ":PORT.VALUES<PITEM>) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                END CASE 
+            NEXT PITEM 
+            IF RECORD.DATA THEN 
+                *buffer (x:": ":record.id)
+                CERT.CT =   DCOUNT(CERTS,AM)
+                SV.RECORD.DATA  =   RECORD.DATA
+                SV.RECORD.ID    =   RECORD.ID
+                
+                CERTS.AM.COUNT = DCOUNT((CERTS), @AM) ; FOR C.REC = 1 TO (CERTS.AM.COUNT) ; CUR.CERT.LOW = (CERTS)<(C.REC)> 
+                    RECORD.DATA =   SV.RECORD.DATA
+                    *cur.cert = raise(certs<c.rec>)
+                    CUR.CERT = RAISE(CUR.CERT.LOW)
+                    CERT.AM.CT = DCOUNT(CUR.CERT,AM)
+                    FOR CERT.ATT = 1 TO CERT.AM.CT 
+                        IF CUR.CERT<CERT.ATT> THEN 
+                            RECORD.DATA<CERT.ATT> = CUR.CERT<CERT.ATT>
+                        END 
+                    NEXT CERT.ATT 
+                    * Use the Eclipse ID of portal cert + Cert.ID for duplicate scanning.
+                    RECORD.ID   =   SV.RECORD.ID:"~":CUR.CERT<4>:CUR.CERT<5>:"~":CUR.CERT<1>
+                    * Duplicate exemption certificate checking.
+                    LOCATE RECORD.ID IN RECORD.LST SETTING POS THEN 
+                        * Existing cert.  
+                    END ELSE 
+                        * New exemption cert.  Add to tracking list.
+                        RECORD.LST = INSERT (RECORD.LST,POS;RECORD.ID)
+                    END 
+                    WRITE RECORD.DATA ON UPDFILE,RECORD.ID ELSE 
+                        ADD.OUTPUT.TEXT = (("file write error:":SPACE(2)):UPDFILENAME:SPACE(2):RECORD.ID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                    END 
+                NEXT C.REC 
+                IF CERTS.AM.COUNT = 0 THEN 
+                    RECORD.ID   =   SV.RECORD.ID:"~XX"
+                    * Duplicate exemption certificate checking.
+                    LOCATE RECORD.ID IN RECORD.LST SETTING POS ELSE 
+                        * New exemption cert.  Add to tracking list.
+                        RECORD.LST = INSERT (RECORD.LST,POS;RECORD.ID)
+                    END 
+                    WRITE RECORD.DATA ON UPDFILE, RECORD.ID ELSE 
+                        ADD.OUTPUT.TEXT = (("file write error:":SPACE(2)):UPDFILENAME:SPACE(2):RECORD.ID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                    END 
+                END 
+            END 
+        NEXT X 
+        
+        * Reduce number of pages by 1 to account for the first & subsequent page reads.
+        PAGE.CT -= 1
+        
+        * Prepare for next page if more pages exist.
+        IF PAGE.CT AND NEXT.PAGE THEN 
+            SKIP.LOC = INDEX(NEXTLINK, '%24skip=',1)
+            SKIP.VALUE = NEXTLINK[SKIP.LOC,999]
+            SKIP = FIELD(FIELD(SKIP.VALUE,'=',2),'&',1)
+        END 
+        WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    REPEAT 
+    *******************
+    IF ERR.MSG THEN 
+        ADD.OUTPUT.TEXT = (("Error!":SPACE(2)):ERR.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+
+FINISH:    
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+**************************************************************************
+PARSE.CERTIFICATES:
+    C.DATA = ''
+    CERTS = ''
+    CI.CT = @FALSE
+    UT.PARSE.JSON PORT.VALUES<PITEM>, CERTIFICATES.ITEMS, CERTIFICATES.VALUES
+    CI.CT = DCOUNT(CERTIFICATES.ITEMS,AM)
+    
+    FOR CERT = 1 TO CI.CT 
+        UT.PARSE.JSON CERTIFICATES.ITEMS<CERT>, CERT.ITEMS, CERT.VALUES
+        CITEM.CT = DCOUNT(CERT.ITEMS,AM)
+        C.DATA = ''
+        FOR CITEM = 1 TO CITEM.CT 
+            IT.NAME = UPCASE(CERT.ITEMS<CITEM>)
+            IT.VAL  = CERT.VALUES<CITEM>
+            BEGIN CASE 
+                CASE IT.NAME = "ID"
+                    C.DATA<1>  =   IT.VAL
+                CASE IT.NAME = "SIGNEDDATE" 
+                    C.DATA<7>  =   IT.VAL
+                CASE IT.NAME = "EXPIRATIONDATE"
+                    C.DATA<8>  =   IT.VAL
+                CASE IT.NAME = "EXEMPTIONNUMBER" AND (C.DATA<5># "!INVALID!")
+                    C.DATA<5>  =   IT.VAL
+                CASE IT.NAME = "VALID"
+                    IF IT.VAL = 'false' THEN 
+                        C.DATA<5> = '!INVALID!'
+                    END 
+                CASE IT.NAME = "EXEMPTIONREASON"
+                    GOSUB PARSE.EXEMPTION.REASON
+                CASE IT.NAME = "TAXNUMBERTYPE"
+                    C.DATA<6>  =   IT.VAL
+                CASE IT.NAME = "ISSINGLECERTIFICATE"
+                    IF UPCASE (IT.VAL) = "TRUE" THEN 
+                        C.DATA<11>  =   "SINGLE"
+                    END ELSE 
+                        C.DATA<11>  =   "BLANKET"
+                    END 
+                CASE IT.NAME = "BUSINESSNUMBERTYPE"
+                    IF NUM( IT.VAL ) THEN 
+                        C.DATA<13> =   IT.VAL
+                        C.DATA<14> = ''
+                    END ELSE 
+                        TYPE.LOOKUP = IT.VAL
+                        TYPE.LOOKUP = CHANGE (TYPE.LOOKUP, ' ','-')
+                        LOCATE IT.VAL IN (AVA.BUS.TYPES<2>)<1> SETTING XLATE.PTR THEN TYPE.VALUE = AVA.BUS.TYPES<1,XLATE.PTR> ELSE TYPE.VALUE = ''
+                        IF NOT(NUM( TYPE.VALUE )) THEN 
+                            C.DATA<13> =   "20"
+                            C.DATA<14> =   IT.VAL
+                        END ELSE 
+                            C.DATA<13> =   TYPE.VALUE
+                            C.DATA<14> = ''
+                        END 
+                    END 
+                CASE IT.NAME = "EXPOSUREZONE"
+                    GOSUB PARSE.EXPOSURE.ZONE
+                CASE OTHERWISE
+                    * Do nothing.
+            END CASE 
+        NEXT CITEM 
+        IF C.DATA<1> THEN 
+            CERTS<-1> = LOWER(C.DATA)
+        END 
+    NEXT CERT 
+        
+    RETURN
+**************************************************************************
+PARSE.EXEMPTION.REASON:
+    UT.PARSE.JSON IT.VAL, EX.ITEMS, EX.VALUES
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    EITEM.CT = DCOUNT (EX.ITEMS,AM)
+    FOR EITEM = 1 TO EITEM.CT 
+        EIT.NAME    = UPCASE (EX.ITEMS<EITEM>)
+        EIT.VAL     = EX.VALUES<EITEM>
+        IF EIT.NAME = "NAME" THEN 
+            IF EIT.VAL = "RESALE" THEN 
+                C.DATA<15> =   "G"
+            END ELSE 
+                IF EIT.VAL = "INDUSTRIAL PROD/MANUFACTURERS" THEN 
+                    C.DATA<15> = "I"
+                END 
+            END 
+        END 
+    NEXT EITEM 
+
+    RETURN
+**************************************************************************
+PARSE.EXPOSURE.ZONE:
+    UT.PARSE.JSON IT.VAL, EX.ITEMS, EX.VALUES
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    EITEM.CT = DCOUNT (EX.ITEMS,AM)
+
+    IF EITEM.CT AND NOT( VALID.EZONES ) THEN 
+        UD.AVA.EZONES VALID.EZONES
+    END 
+    FOR EITEM = 1 TO EITEM.CT 
+        EIT.NAME    = EX.ITEMS<EITEM>
+        EIT.VAL     = EX.VALUES<EITEM>
+        
+        IF UPCASE(EIT.NAME) = "NAME" THEN 
+            LOCATE EIT.VAL IN VALID.EZONES<2> SETTING VAL THEN 
+                C.DATA<4>  =   VALID.EZONES<1,VAL>
+                C.DATA<3>  =   "US"
+            END 
+        END 
+    NEXT EITEM 
+    
+    RETURN
+**************************************************************************
+INITIALIZE:
+***
+* Start up
+***
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+    PGM.NAME        =   'UD.AVA.PORT.CUSTS'
+    SKIP.REASON = ''
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/"):SPACE(2):OCONV(TIME(),"MT")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+* objects
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.API.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, LIC.OR, "License", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CTRL.ID, "AvaTaxOptions" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULT.BR, "DefaultBranch" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PAGE.SIZE, "PageSize", 100 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, RETRY.COUNT, "RetryCount", 2 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+*   END.WITH
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+*   WITH MANAGER::OPEN
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, UPDFILE, "", UPDFILENAME:"" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = ('Cannot open ':UPDFILENAME:VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+*   END.WITH
+    
+    
+*  Variables
+    PAGE.CT =   1
+    FIRST.CALL = @TRUE
+    RECORD.LST = ''
+    NEXT.PAGE = @FALSE
+    IF UNASSIGNED(SKIP) THEN SKIP = '' ELSE IF SKIP = @NULL THEN SKIP = ''
+    IF UNASSIGNED(RESP) THEN RESP = '' ELSE IF RESP = @NULL THEN RESP = ''
+    IF UNASSIGNED(ERR.MSG) THEN ERR.MSG = '' ELSE IF ERR.MSG = @NULL THEN ERR.MSG = ''
+    IF UNASSIGNED(LOG.ID) THEN LOG.ID = '' ELSE IF LOG.ID = @NULL THEN LOG.ID = ''
+    IF UNASSIGNED(LOG.REC.ID) THEN LOG.REC.ID = '' ELSE IF LOG.REC.ID = @NULL THEN LOG.REC.ID = ''
+    IF UNASSIGNED(COMPANY.ID) THEN COMPANY.ID = '' ELSE IF COMPANY.ID = @NULL THEN COMPANY.ID = ''
+    VALID.EZONES = ''
+    UD.AVA.GET.COMPANY.ID DEFAULT.BR, COMPANY.ID
+    
+    READ AVA.BUS.TYPES FROM CTRLFILE, ('UD.AVALARA.BUS.TYPE') ELSE AVA.BUS.TYPES = ''
+    
+    ADD.OUTPUT.TEXT = (("PGM Name:":SPACE(2)):PGM.NAME) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    UT.SEC3 93, AVA.OK, '', NO
+
+* check for reasons to not do any processing
+    BEGIN CASE 
+
+    * the custom avalara api interface is not enabled.
+        CASE NOT( ENABLED )
+            SKIP.REASON = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        CASE NOT( AVA.OK ) AND NOT( LIC.OR )
+            SKIP.REASON = "Avalara is not licensed in this environment."
+    END CASE 
+ RETURN
+
+* checksum: 32076
+* last change: 10/11/2022 10:39:52am
+* last compile: 10/11/2022 10:39:52am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.PORT.CUSTS"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "RETRYCALL,FINISH,PARSE.CERTIFICATES,PARSE.EXEMPTION.REASON,PARSE.EXPOSURE.ZONE,INITIALIZE,EXIT.IF.ERROR.MESSAGE,"
+        PROGRAM.LABEL.LIST := "EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 7 THEN
+        ON ERROR.THROW.PTR GOSUB RETRYCALL,FINISH,PARSE.CERTIFICATES,PARSE.EXEMPTION.REASON,PARSE.EXPOSURE.ZONE,INITIALIZE,EXIT.IF.ERROR.MESSAGE
+    END
+    IF ERROR.THROW.PTR >= 8 AND ERROR.THROW.PTR <= 8 THEN
+        ON ERROR.THROW.PTR - 7 GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.PORT.CUSTS"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.PORT.CUSTS"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.PORT.CUSTS"
+ 
+    RETURN

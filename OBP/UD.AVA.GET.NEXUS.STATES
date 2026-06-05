@@ -1,0 +1,181 @@
+    subroutine ud.ava.get.nexus.states (states,gl.br,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST to get the CompanyId from the CompanyCode               *
+*                                                                        *
+**************************************************************************
+* GL.BR              Branch for call... Read default branch from setup   *
+* STATES             Nexus States as requested                           *
+**************************************************************************
+    assign (filters)
+    assign (resp)
+    states~~~
+    begin.date      = date()
+    begin.time      = int(time())
+    cached.ctrl~~~
+    cached.date~
+    cached.time~
+    pgm.name        =   'UD.AVA.GET.NEXUS.STATES'
+    buffer.clear ()
+    * Store time stamp of current run.  Must be first to use caching of results.
+    buffer (oconv(date(),'D4/'):" ":oconv(time(),'MT'))
+    buffer (date():" ":time())
+    
+* Pull login credentials and base URL from Control Record.
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled             = :: ("Enabled", 0, 1)
+        lic.or              = :: ("License", 0, 1)
+        ctrl.id             = :: ("AvaTaxOptions")
+        default.br          = :: ("DefaultBranch")
+        cache.seconds       = :: ("GetNexusCacheSec",300)
+        api.pgm             = :: ("GetNexusApiPgm")
+        cached.control      = :: ("NexusCacheCtrlRecord")
+*       company.id = :: *** possibly need api to read companies, selecting dynamically.
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    check.cached.control
+    
+    if states {
+        buffer ("Cached states from control record used.")
+        goto finish
+    }
+    
+    read settings from ctrlfile, ctrl.id }{
+        settings = ''
+    }
+    
+*  Set default branch in case GL.BR is not passed in.
+    gl.br = assign (default.br)
+    comp.id~~~
+
+    sub::ud.ava.get.company.id (gl.br, comp.id)
+        
+*  Read only states from API call to AVATAX.    
+    
+    filters =   "jurisTypeId eq STA"
+
+* Store filters for comparison in cache.  If filters don't match, we need a fresh read.
+    buffer (filters)
+    
+    check.cached.resp
+    
+    call @api.pgm (comp.id,'',filters,'','','',resp,log.id,log.rec.id)
+
+parse.json: 
+*  Parse JSON.  First item is company count.    
+    sub::ut.parse.json (resp, items, values)
+    
+    if items<1>  = "@recordsetCount" {
+        nex.ct =   values<1>
+    }{
+        if items<1>[1,5] = "error" {
+            buffer ("Error.  See Response.")
+            finish
+        }
+        nex.ct =   1
+    }
+    if !nex.ct {
+        buffer ("Error.  No company nexus returned.")
+        finish
+    }
+    
+*  Re-parse second item of JSON.  Contains count qty of Company Objects.    
+    sub::ut.parse.json (values<2>, items, new.values)
+    values      =   new.values
+*  We filtered in the API call to STA States only  If the filter failed, the call clears the filter
+*  then retries.  In that event we could get a list of ALL company Nexus'  Loop through whatever is returned.    
+*  Loop through objects.  Parse each object.  Determine if Nexus is STA.
+*  Return Nexus Region if matched.    
+    for x = 1 to nex.ct {
+        sub::ut.parse.json (items<x>, new.items, new.values)
+        locate 'jurisTypeId' in new.items setting result.pos {
+            check.type = new.values<result.pos>
+            if check.type = 'STA' {
+                locate 'region' in new.items setting result.pos {
+                    states = add.am (new.values<result.pos>)
+                }
+            }
+        }
+    }
+    
+    if !states {
+        buffer ("No Nexus States found.")
+    }{
+        * Write states to Cache control record.
+        ifnotnull cached.control {
+            cached.ctrl~~~
+            cached.ctrl<1,1>    =   begin.date
+            cached.ctrl<1,2>    =   begin.time
+            cached.ctrl<2>      =   lower(states)
+            unfetch (cached.ctrl, ctrlfile, cached.control)
+        }
+    }
+    
+finish:
+    buffer (lower(resp))
+    sub::write.last.action (output.buffer,pgm.name)    
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+**************************************************************************
+check.cached.control:
+    ifnull cached.control {
+        buffer ("No Cache Control Record defined.")
+    }
+    return.ifnull cached.control
+    
+    cached.ctrl  =   fetch(ctrlfile, cached.control)
+    cached.date =   cached.ctrl<1,1>
+    cached.time =   cached.ctrl<1,2>
+    timesinceread   =   elapsed.time(cached.date,cached.time)
+    if timesinceread <= cache.seconds {
+        states = raise(cached.ctrl<2>)
+    }
+    
+    return
+**************************************************************************
+check.cached.resp:
+    sub::read.last.action (timestamp,api.pgm,@false,1)
+    if timestamp {
+        ts.date =   field(timestamp," ",1)
+        ts.time =   field(timestamp," ",2)
+        if ts.date  =   date() {
+            if (time() - ts.time) < cache.seconds {
+                sub::read.last.action (old.filter,api.pgm,@false,2)
+                if old.filter<1,2> = filters {
+                    sub::read.last.action (log.entry,api.pgm,@false)
+                    log.ct = dcount (log.entry,am)
+                    for log.ln = 1 to log.ct {
+                        if upcase(log.entry<log.ln>[1,17]) = '{"@RECORDSETCOUNT' {
+                            resp = log.entry<log.ln,1>
+                        }
+                    }
+                }
+            }
+        }
+    }
+    * If we get here with a response, we are finished. 
+    if resp {
+        buffer ("Cached response used.")
+        return to parse.json
+    }{
+        buffer ("Get fresh response.")
+    }
+return
+
+* checksum: 21456
+* last change: 10/11/2022 10:39:46am
+* last compile: 10/11/2022 10:39:46am

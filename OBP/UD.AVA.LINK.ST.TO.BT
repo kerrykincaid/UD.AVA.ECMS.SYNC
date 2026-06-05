@@ -1,0 +1,142 @@
+    subroutine ud.ava.link.st.to.bt (company.Id,cust.id,json,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* modeled after the C# Avalara SDK.  LinkShipToCustomersToBillCustomer   *
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* cust.id            The bt cust.id to be linked to.                     *
+* json               JSON document of ship to customers to link to BT    *
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** Link two customer records together
+*** </summary>
+*** <remarks>
+*** Links a Ship-To customer record with a Bill-To customer record.
+***  
+*** Customer records represent businesses or individuals who can provide exemption certificates. Some customers
+*** may have certificates that are linked to their shipping address or their billing address. To group these
+*** customer records together, you may link multiple bill-to and ship-to addresses together to represent a single
+*** entity that has multiple different addresses of different kinds.
+***  
+*** In general, a customer will have only one primary billing address and multiple ship-to addresses, representing
+*** all of the different locations where they receive goods. To facilitate this type of customer, you can send in
+*** one bill-to customer code and multiple ship-to customer codes in a single API call.
+***  
+*** Note that you can only link a ship-to customer record to a bill-to customer record. You may not link two customers
+*** of the same kind together.
+*** 
+*** </remarks>
+*** <param name="companyId">The unique ID number of the company defining customers.</param>
+*** <param name="code">The code of the bill-to customer to link.</param>
+*** <param name="model">A list of information about ship-to customers to link to this bill-to customer.</param>
+*        public CustomerModel LinkShipToCustomersToBillCustomer(Int32 companyId, String code, LinkCustomersModel model)
+*        {
+*            var path = new AvaTaxPath("/api/v2/companies/{companyId}/customers/billto/{code}/shipto/link");
+*            path.ApplyField("companyId", companyId);
+*            path.ApplyField("code", code);
+*            return RestCall<CustomerModel>("POST", path, model);
+*        }
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+    
+    if cust.id & num(cust.id) {
+    * Customer ID only required for linking customers, linking and unlinking certificates.
+        change(method.mod, "$cust.id$",cust.id)
+        buffer ("Customer ":cust.id:" added to url.")
+    }{   
+        buffer ("Invalid customer id.  Exiting.")
+        finish
+    }
+    change(method, "$company.id$", company.id)
+    method          =   method:method.mod
+    buffer ("Method URL used is:  ":method)
+        
+    sub::ava.do.request (http.type,method,json,,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+    }
+    buffer (lower(json))
+    buffer (lower(resp))
+
+finish:    
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.LINK.ST.TO.BT'
+    skip.reason~~~
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled             = :: ("Enabled", 0, 1)
+        lic.or              = :: ("License", 0, 1)
+        ctrl.id             = :: ("AvaTaxOptions")
+        default.br          = :: ("DefaultBranch")
+        method              = :: ("CustomerPostBase")
+        method.linktwo      = :: ("CustomerLinkTwo")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    method.mod  :=  method.linktwo
+    buffer ("Link Ship To customers to Bill To.")
+
+    read settings from ctrlfile, ctrl.id }{
+        return
+    }
+    
+*  Variables
+    assign (cust.id)
+    
+    http.type       =   'POST'
+        
+    run.log<-1> =   "HTTP TYPE:  ":http.type
+    run.log<-1> =   "PGM Name:  ":pgm.name
+    
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+
+* checksum: 7628
+* last change: 10/11/2022 10:39:48am
+* last compile: 10/11/2022 10:39:48am

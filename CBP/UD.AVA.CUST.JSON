@@ -1,0 +1,533 @@
+    SUBROUTINE UD.AVA.CUST.JSON  (JSON, CN, ISNEW)
+** Version# 0.0001[89] - 12/29/25 - 05:20pm  - KK05718 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.CUST.JSON at 05:20pm 12/29/2025 by KK057*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.CUST.JSON          *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 4666
+* last change: 12/23/2025 06:45:56pm
+* last compile: 10/11/2022 10:39:36am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+* subroutine - ud.ava.cust.json
+
+*---------------------------program description---------------------------*
+* Builds Avalara AVATAX API json document for New Customer or for updating
+* a single customer.
+*--------------------------parameter definition---------------------------*
+* json - json record for new customer, customer, or Cert.          [out]
+* cn   - Customer number to process.                                [in]
+* isnew - Boolean                                                   [in]
+*           New customer @true, existing customer @false [default]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INIT
+    GOSUB PREP.FILES
+    
+    GOSUB PROC.CUST
+    JSON = NEWREC.J
+    
+FINISH:
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    UT.TEMPFILE.DELETE TEMP.NAME, TEMPFILE
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+***************************************************************************
+***************************************************************************
+INIT: * INITIALIZE
+    BEGIN.DATE = DATE()
+    BEGIN.TIME = INT(TIME())
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/"):SPACE(2):OCONV(TIME(),"MT")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    PGM.NAME    =   "UD.AVA.CUST.JSON"
+* objects
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.ECMS.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, VAR.EFF.DATE, "var.eff.date", "-1/DA/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, VAR.EXP.DATE, "var.exp.date", "+1/FE/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVADATEFORMAT, "AvalaraDateFormat", "D-YMD[Z4,2,2]" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        * Record field tracking to determine if changes are to customer data, or certificate data.    
+        REC.FIELDS = ''
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CustomerFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<1> = TEMP.VAR.1
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CertificateFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<2> = TEMP.VAR.1
+        REC.FIELDS<1> = CHANGE(REC.FIELDS<1>, ',', @VM)
+        REC.FIELDS<2> = CHANGE(REC.FIELDS<2>, ',', @VM)
+*   END.WITH
+    IF NOT( ENABLED ) THEN 
+        ADD.OUTPUT.TEXT = ("Interface not enabled!") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+    REALDATE DEF.EFF.DATE, VAR.EFF.DATE
+    IF NOT( DEF.EFF.DATE ) THEN 
+        ADD.OUTPUT.TEXT = ((SPACE(2):("Bad Default Effective Date!":SPACE(2)))) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        DEF.EFF.DATE = DATE()
+    END 
+    
+* customer record
+    READ CUS.REC FROM CUSFILE,CN ELSE 
+        RETURN TO FINISH
+    END 
+    
+* variables    
+    IF UNASSIGNED(ISNEW) THEN ISNEW = '' ELSE IF ISNEW = @NULL THEN ISNEW = ''
+    PHST.MSG = ''
+    RUN.MSG = ''
+    RESP = ''
+    CMD = ''
+    CN.CNT = @FALSE
+    PROCD.CNS = ''
+    C.CERT.CNT = @FALSE
+    CERT.COUNT = @FALSE
+    LAST.RUN = ''
+    LAST.RUN.REC = ''
+    ENVELP      =  CHAR (34)
+    
+    
+* New customer and cert JSON.
+    NEWREC.J = ''
+    NRJ.LEVEL   =  1
+    CUR.CUST = ''
+    CUST.HEAD = ''
+* build header portion of custom newrec.j (JSON).
+    CUST.HEAD<1>      =  "customerCode"
+    CUST.HEAD<2>      =  "name"
+    CUST.HEAD<3>      =  "line1"
+    CUST.HEAD<4>      =  "line2"
+    CUST.HEAD<5>      =  "line3"
+    CUST.HEAD<6>      =  "city"
+    CUST.HEAD<7>      =  "postalCode"
+    CUST.HEAD<8>      =  "country"
+    CUST.HEAD<9>      =  "region"   
+    CUST.HEAD<10>     =  "isBill"
+    CUST.HEAD<11>     =  "isShip"    
+    
+    CERT.HEAD = ''
+* build item portion of cert newrec.j.
+    CERT.HEAD<1>      =  "signedDate"
+    CERT.HEAD<2>      =  "expirationDate"
+    CERT.HEAD<3>      =  "filename"
+    CERT.HEAD<4>      =  "valid"
+    CERT.HEAD<5>      =  "exemptionNumber"
+    CERT.HEAD<6>      =  "exemptionReason"
+    CERT.HEAD<6, 2>   =  "name"
+    CERT.HEAD<7>      =  "taxNumberType"
+    CERT.HEAD<8>      =  "businessNumberType"
+    CERT.HEAD<9>      =  "exposureZone"
+    CERT.HEAD<9, 2>   =  "name"    
+    
+    CEFD = ''
+    CEXD = ''
+    BUS.NUM.TYPE = ''
+
+* pricing type to business type mapping variables.
+    READ XREF.TYPES FROM CTRLFILE, "UD.AVA.XREF.TYPES" ELSE 
+        XREF.TYPES = ""
+    END 
+    READ AVA.BUS.TYPES FROM CTRLFILE, ('UD.AVALARA.BUS.TYPE') ELSE AVA.BUS.TYPES = ''
+    BUS.NUM.TYPE = ''
+    PRC.TYPE    =  CUS.REC<35,1>
+    
+    LOCATE PRC.TYPE IN XREF.TYPES<1> SETTING TYPE.POS ELSE 
+        TYPE.POS = ''
+    END 
+    BUS.TYPE    =   XREF.TYPES<2,TYPE.POS>
+    IF NOT( BUS.TYPE ) THEN 
+        *bus.num.type    =   trim (prc.type)
+        BUS.NUM.TYPE    =   "Other"
+    END ELSE 
+        LOCATE BUS.TYPE IN (AVA.BUS.TYPES<1>)<1> SETTING XLATE.PTR THEN TYPE.NAME = AVA.BUS.TYPES<2,XLATE.PTR> ELSE TYPE.NAME = ''
+        IF TYPE.NAME THEN 
+            TYPE.NAME = CHANGE (TYPE.NAME, '-', ' ')
+            TYPE.NAME = TRIM (TYPE.NAME)
+            BUS.NUM.TYPE    =   TYPE.NAME
+        END 
+    END 
+    
+**          read vst from statfile,'valid.us.states' else vst = ''
+    READ VST FROM CTRLFILE, "VALID.US.STATES" ELSE 
+        VST = ""
+    END    
+
+* variables for api calls and caching.
+    GL.BR          =  CUS.REC<53>
+    IF NOT( GL.BR ) THEN 
+        GL.BR = "1000"
+    END 
+    UD.AVA.GET.COMPANY.ID GL.BR, COMP.ID
+    UD.AVA.EZONES EXP.ZONES
+    E.REG       =  EXP.ZONES<1>
+    E.NAMES     =  EXP.ZONES<2>
+    EZONE.CT =  DCOUNT (E.REG, VM)
+
+    RETURN
+
+***************************************************************************
+PREP.FILES:
+
+    UT.OPEN.FILE "UD.AVALARA", AVAIFILE, ERR.MSG, YES
+    IF ERR.MSG THEN 
+        RETURN
+    END 
+    
+    UT.OPEN.FILE "UD.AVALOG", AVALOGFILE, ERR.MSG, YES
+    IF ERR.MSG THEN 
+        ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERR.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO FINISH
+    END 
+    
+    RETURN
+***************************************************************************
+***************************************************************************
+GET.CUS.COUNTRY:
+    POSTAL.LEN  = LEN(CUS.POSTAL)
+    BEGIN CASE 
+        CASE POSTAL.LEN = 7
+         POSTAL.LKUP = CUS.POSTAL[1,7]
+        CASE POSTAL.LEN = 6 AND CUS.POSTAL[6,1] = "."
+         POSTAL.LKUP = CUS.POSTAL[1,6]
+        CASE OTHERWISE
+         POSTAL.LKUP = CUS.POSTAL[1,5]
+    END CASE 
+
+    READV CUS.COUNTRY FROM ZIPFILE,POSTAL.LKUP,5 ELSE CUS.COUNTRY = 'US'
+    IF NOT(CUS.COUNTRY) THEN CUS.COUNTRY = 'US'
+    
+  RETURN
+***************************************************************************
+***************************************************************************
+PROC.CUST:
+    CERT.CT = @FALSE
+    CERTS = ''
+
+    C.CERT.CNT = DCOUNT(CUS.REC<33>,VM)
+    IF C.CERT.CNT = 0 THEN 
+        RETURN
+    END 
+    
+    * As we process certs, the customer will be setup first time through.
+    CUR.CUST<1>   =  CN
+    * Name.
+    CUR.CUST<2>   =  CONVERT(CHAR(34),CHAR(39),TRIM(CUS.REC<1>))
+    * Line 1
+    CUR.CUST<3>   =  CONVERT(CHAR(34),CHAR(39),TRIM(CUS.REC<2,1>))
+    * Line 2
+    CUR.CUST<4>   =  CONVERT(CHAR(34),CHAR(39),TRIM(CUS.REC<2,2>))
+    * Line 3
+    CUR.CUST<5>   =  CONVERT(CHAR(34),CHAR(39),TRIM(CUS.REC<2,3>))
+    * City
+    CUR.CUST<6>   =  TRIM(CUS.REC<3>)
+    * Postal
+    CUS.POSTAL    =  TRIM(CUS.REC<5>)
+    IF CUS.POSTAL = "." THEN 
+        ADD.OUTPUT.TEXT = ("Invalid Zip code for customer: ":CN) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN
+    END 
+    CUR.CUST<7>   =  CUS.POSTAL
+    * Country
+    GOSUB GET.CUS.COUNTRY
+    CUR.CUST<8>   =  CUS.COUNTRY
+    * Region (State)
+    CUR.CUST<9>   =  TRIM(CUS.REC<4>)
+    * IsBill
+    CUR.CUST<10>  =  "true"
+    * IsShip
+    CUR.CUST<11>  =  "false"
+    
+    IF NOT( (ISNEW) ) THEN 
+        GOTO START.JSON
+    END 
+    
+    * get all certificates for customer.
+    FOR CERT.NO =   1 TO C.CERT.CNT    
+* build certificate portion of new customer data.
+        * Skip any deleted or expired certificates.  (Not likely with a new customer, but possible).
+        CERT.REGION       =  CUS.REC<33,CERT.NO>
+        CERT.NUMBER       =  CUS.REC<34,CERT.NO>
+        AVAD_ID =   CN:"~":CERT.REGION:CERT.NUMBER
+        IF ISNEW THEN 
+            EFF.DATE    =   DEF.EFF.DATE
+        END ELSE 
+            READV EFF.DATE FROM AVAIFILE, (AVAD_ID), (2) ELSE EFF.DATE = ''
+            IF NOT( EFF.DATE ) THEN 
+                EFF.DATE    =   DEF.EFF.DATE
+            END 
+        END 
+        
+        *exp.date    =   cus.rec<172,cert.no>
+        * Expiring all certificates
+        EXP.DATE   =  20821
+        EXP.DATE  +=  0
+        IF NOT( EXP.DATE ) THEN 
+            REALDATE DEFAULTEXPIRE, VAR.EXP.DATE
+            READV EXP.DATE FROM AVAIFILE, (AVAD_ID), (3) ELSE EXP.DATE = (DEFAULTEXPIRE)
+        END 
+        IF INDEX(EFF.DATE,"/",1) THEN 
+            CEFD        =   ICONV(EFF.DATE,"D4/")
+        END ELSE 
+            CEFD        =   EFF.DATE
+        END 
+        IF INDEX(EXP.DATE,"/",1) THEN 
+            CEXD        =   ICONV(EXP.DATE,"D4/")
+        END ELSE 
+            CEXD        =   EXP.DATE
+        END 
+        
+        IF (CEXD <DATE()) OR (CEFD >CEXD) THEN 
+            ADD.OUTPUT.TEXT = ("Expired or invalid effective date on cert.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            CONTINUE
+        END 
+        
+        CERT.CT += 1
+        CUR.CERT = ''
+        
+        CUR.CERT<1>       =  OCONV(CEFD,AVADATEFORMAT):"T00:00:00"
+        CUR.CERT<2>       =  OCONV(CEXD,AVADATEFORMAT):"T00:00:00"
+        
+        * Is cert blank?  Use for future checking.
+        CERT.BLANK        =  LEN(TRIM(CERT.NUMBER)) = 0
+        UD.AVA.TAXCERT.IMG CN, CERT.NUMBER, CERT.FILENAME
+        CUR.CERT<3>       =  CERT.FILENAME
+        CERT.FILENAME     =  ""
+        CUR.CERT<4>       =  "true"
+        CUR.CERT<5>       =  CERT.NUMBER
+        EXEMPT.REASON     =  FIELD(CUS.REC<105,CERT.NO>,'=',1)
+        *Test for a Type other than G or I, Resale or Inducstrial/mfg
+        WRNG.REAS = (EXEMPT.REASON # "G") AND (EXEMPT.REASON # "I")
+        *Test for DEN Type.  DEN is allowed here.
+        WRNG.REAS = (WRNG.REAS) AND (EXEMPT.REASON # "DEN")
+        *Skip if Blank, NOT G, NOT I, NOT DEN.
+        SKIP.CERT = (CERT.BLANK OR WRNG.REAS)
+        IF CERT.REGION = "CO" AND EXEMPT.REASON = "DEN" THEN 
+        *Skip if DEN, but a City of Denver exemption exists.
+            SKIP.CERT = SKIP.CERT AND (CUS.REC<175,CERT.NO,1> = "DENVER")
+        END 
+        IF SKIP.CERT THEN 
+            CONTINUE
+        END 
+        
+        BEGIN CASE 
+            CASE EXEMPT.REASON    =  "I"
+                CERT.REASON = "INDUSTRIAL PROD/MANUFACTURERS"
+
+            CASE EXEMPT.REASON    =  "G"
+                CERT.REASON = "RESALE"
+        END CASE 
+        CUR.CERT<6, 2> =  CERT.REASON
+      
+        CUR.CERT<7>      =  "TIN"
+        CUR.CERT<8>      =  BUS.NUM.TYPE
+        
+        * exposure zones.
+        LOCATE CERT.REGION IN E.REG<1> SETTING POS THEN 
+        END 
+        EXP.ZONE.NAME        =  E.NAMES<1, POS>
+        
+        CUR.CERT<9, 2> =  EXP.ZONE.NAME
+        
+        CERTS< -1>       =  LOWER (CUR.CERT)
+    NEXT CERT.NO 
+        
+*   now we have a customer and all of their certificates.
+* create the newrec.j document to create the customer with certs.
+    CERT.CT  =  DCOUNT (CERTS, AM)
+
+* no certs, no data to update.
+    IF ISNEW AND NOT( (CERT.CT) ) THEN 
+        ADD.OUTPUT.TEXT = ("No new certificates to add for customer.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN
+    END 
+START.JSON:
+
+    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 1
+    
+    CX.COUNT = DCOUNT (CUR.CUST, AM)
+
+    FOR CX   =  1 TO CX.COUNT 
+        MV.CT = DCOUNT (CUR.CUST<CX>, VM)
+        IF MV.CT = 2 THEN 
+            IF (CUR.CUST<CX, 2>) THEN 
+                UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 1
+                UT.ADD.JSON NRJ.LEVEL, NEWREC.J, CUST.HEAD<CX, 2>, CUR.CUST<CX, 2>, "", YES
+                UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 2
+            END 
+        END ELSE 
+            IF (CUR.CUST<CX>) THEN 
+                UT.ADD.JSON NRJ.LEVEL, NEWREC.J, CUST.HEAD<CX>, CUR.CUST<CX>
+            END 
+        END 
+    NEXT CX 
+* Only process certificates for a new customer.
+    IF NOT( ISNEW ) THEN 
+        ADD.OUTPUT.TEXT = ("Not a new customer!") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO END.JSON
+    END 
+    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "certificates", "", 3
+
+    FOR CERT = 1 TO CERT.CT 
+        CUR.CERT =  RAISE (CERTS<CERT>)
+        CC.ID = CN : "~" : CUR.CERT<4>
+
+        UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 1
+        CERT.AM.COUNT = DCOUNT (CUR.CERT, AM)
+        FOR CERT.AM   =  1 TO CERT.AM.COUNT 
+            LAST.AM =   (CERT.AM = CERT.AM.COUNT)
+            MV.CT = DCOUNT (CUR.CERT<CERT.AM>, VM)
+            IF MV.CT = 2 THEN 
+                IF (CUR.CERT<CERT.AM, 2>) THEN 
+                    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, CERT.HEAD<CERT.AM, 1>, "", 6
+                    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, CERT.HEAD<CERT.AM, 2>, CUR.CERT<CERT.AM, 2>, "", YES
+                    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 2, LAST.AM
+                END 
+            END ELSE 
+                IF (CUR.CERT<CERT.AM>) THEN 
+                    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, CERT.HEAD<CERT.AM>, CUR.CERT<CERT.AM>, "", LAST.AM
+                END 
+            END 
+        NEXT CERT.AM 
+        LAST.CERT = (CERT=CERT.CT)
+        UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 2, LAST.CERT
+    NEXT CERT 
+
+    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 4, YES
+END.JSON:
+    UT.ADD.JSON NRJ.LEVEL, NEWREC.J, "", "", 2, YES
+*    sub::ut.add.json (nrj.level, newrec.j, "", "", 4, yes)
+    IF NEWREC.J THEN 
+        MSG.OUT = LOWER(NEWREC.J)
+        ADD.OUTPUT.TEXT = (MSG.OUT) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END ELSE 
+        ADD.OUTPUT.TEXT = ("No JSON Created.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+
+    RETURN
+***************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+
+* checksum: 4666
+* last change: 12/23/2025 06:45:56pm
+* last compile: 10/11/2022 10:39:36am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.CUST.JSON"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,INIT,PREP.FILES,GET.CUS.COUNTRY,PROC.CUST,START.JSON,END.JSON,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 9 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,INIT,PREP.FILES,GET.CUS.COUNTRY,PROC.CUST,START.JSON,END.JSON,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.CUST.JSON"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.CUST.JSON"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.CUST.JSON"
+ 
+    RETURN

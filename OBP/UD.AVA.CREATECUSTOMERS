@@ -1,0 +1,134 @@
+    subroutine ud.ava.createcustomers (company.Id,json,resp,err.msg,log.id,log.rec.id)
+
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  CreateCustomers                     *
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* json               JSON formatted document with customers to be created*
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** FROM C# SDK DOCUMENTATION.
+*** <summary>
+*** Create customers for this company
+*** </summary>
+*** <remarks>
+*** Create one or more customers for this company.
+***  
+*** A customer object defines information about a person or business that purchases products from your
+*** company. When you create a tax transaction in AvaTax, you can use the `customerCode` from this
+*** record in your `CreateTransaction` API call. AvaTax will search for this `customerCode` value and
+*** identify any certificates linked to this `customer` object. If any certificate applies to the transaction,
+*** AvaTax will record the appropriate elements of the transaction as exempt and link it to the `certificate`.
+***  
+*** A nested object such as CustomFields could be specified and created along with the customer object. To fetch the
+*** nested object, please call 'GetCustomer' API with appropriate $include parameters.
+*** </remarks>
+* <param name="companyId">The unique ID number of the company that recorded this customer</param>
+* <param name="model">The list of customer objects to be created</param>
+* 
+*         public List<CustomerModel> CreateCustomers(Int32 companyId, List<CustomerModel> model)
+*         {
+*             var path = new AvaTaxPath("/api/v2/companies/{companyId}/customers");
+*             path.ApplyField("companyId", companyId);
+*             return RestCall<List<CustomerModel>>("POST", path, model);
+*         }
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+   
+*    sub::ud.ava.get.company.id (gl.br, company.id)
+*Passed in from calling routine.
+    buffer (lower(json))
+    change(method, "$company.id$", company.id)
+    method          =   method
+    buffer ("Method URL used is:  ":method)
+        
+    sub::ava.do.request (http.type,method,json,,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+    }
+    
+    buffer (lower(resp))
+
+finish:    
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    pgm.name        =   'UD.AVA.CREATECUSTOMERS'
+    begin.date      = date()
+    begin.time      = int(time())
+    skip.reason~~~
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+    assign (company.id)
+    if !company.id {
+        buffer ("Company ID required!")
+        finish
+    }
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled             = :: ("Enabled", 0, 1)
+        lic.or              = :: ("License", 0, 1)
+        ctrl.id             = :: ("AvaTaxOptions")
+        default.br          = :: ("DefaultBranch")
+        method              = :: ("CustomerPostBase")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:err.msg)
+            goto finish
+        }
+    }
+    
+    buffer ("Create customers.")
+    
+    read settings from ctrlfile, ctrl.id }{
+        return
+    }
+    
+*  Variables
+    http.type       =   'POST'
+    
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+    
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+
+* checksum: 45082
+* last change: 10/11/2022 10:39:35am
+* last compile: 10/11/2022 10:39:35am

@@ -1,0 +1,358 @@
+    SUBROUTINE UD.AVA.CUST.SELECT  (CUSTOMERLIST, SELECT.TYPE)
+** Version# 0.0001[85] - 09/20/25 - 05:06pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.CUST.SELECT at 05:06pm 09/20/2025 by SF0*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.CUST.SELECT        *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 5468
+* last change: 10/11/2022 10:39:36am
+* last compile: 10/11/2022 10:39:36am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+* subroutine - ud.ava.cust.select
+
+*---------------------------program description---------------------------*
+*  Selects customer records for ud.ava.ecms.sync.
+*--------------------------parameter definition---------------------------*
+* customerlist -  Select list of customers to be processed.         [out]
+* select.ype   -  Full, Partial, or Quick.  Full and Partial both   [in]
+*   perform a full select to match the FULL or PARTIAL sync of 
+*   UD.AVA.ECMS.SYNC.  Quick only selects customers edited within 
+*   Window.  If select.type not passed, select type will be determined
+*   from setting in setup record and time since last select.
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INITIALIZE
+    PHST.MSG = "Selecting Customers..."
+    IF PHANTOM.PROC THEN 
+        WRITE PHST.MSG ON PHSTFILE, PID$
+    END 
+    GOSUB SELECT.CUSTS
+
+***************************************************************************
+* SECTION CLEANUP:    *******************************************************
+***************************************************************************
+FINISH:
+
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+***************************************************************************
+* SECTION STARTUP ROUTINES: *************************************************
+***************************************************************************
+INITIALIZE:
+    BEGIN.DATE = DATE()
+    BEGIN.TIME = INT(TIME())
+    PGM.NAME    =   "UD.AVA.CUST.SELECT"
+    
+* objects
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (OCONV(TIME(),"MTHS")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.ECMS.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TROUBLESHOOTING, "TroubleShooting", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULLSYNCTIME, "FullSyncPickTime" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULLSYNCDAYS, "FullSyncDayofWeek" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PARTSYNCDAYS, "PartSyncDayofWeek" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PARTSYNCWINDOW, "PartialWindow", 0 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULLSELECTONE, "FullSelectOne" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PARTSELECTONE, "PartSelectOne" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, QUIKSELECTONE, "QuikSelectOne" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, QUIKSELECTTWO, "QuikSelectTwo", @FALSE:"" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ALLSSELECTEND, "allsselectend" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+
+*   END.WITH
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+*   WITH MANAGER::OPEN
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+*   END.WITH
+    
+    IF NOT( ENABLED ) THEN 
+        ADD.OUTPUT.TEXT = ("Interface not enabled!") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO FINISH
+    END 
+    
+* variables    
+
+    PHST.MSG = ''
+    CMD1 = ''
+    CMD2 = ''
+    CMDZ = ''
+    LAST.DATE = ''
+    NEXT.DATE = ''
+    LAST.TIME = ''
+    IF UNASSIGNED(CUSTOMERLIST) THEN CUSTOMERLIST = '' ELSE IF CUSTOMERLIST = @NULL THEN CUSTOMERLIST = ''
+    IF UNASSIGNED(SELECT.TYPE) THEN SELECT.TYPE = '' ELSE IF SELECT.TYPE = @NULL THEN SELECT.TYPE = ''
+    FULL.SELECT = @FALSE
+    PART.SELECT = @FALSE
+    QUIK.SELECT = @FALSE
+    
+    * read last date and time of last customer select
+    READ.LAST.ACTION LAST.DATE, PGM.NAME, @FALSE, 1
+    READ.LAST.ACTION LAST.TIME, PGM.NAME, 0, 2
+    
+    LAST.DATE = ICONV (LAST.DATE, "D4/")
+    LAST.TIME = ICONV (LAST.TIME, "MTHS")
+    IF NOT( (LAST.DATE = DATE()) ) THEN 
+        LAST.DATE = DATE()
+        LAST.TIME = 1
+    END 
+    GET.DATETIME LAST.DATE, LAST.TIME, LAST.DATETIME
+    
+    
+  RETURN
+***************************************************************************
+* SECTION SELECT PROCESSING: ************************************************
+***************************************************************************
+SELECT.CUSTS:
+    IF NOT( SELECT.TYPE ) THEN 
+        
+        TODAYOFWEEK = OCONV(DATE(), "DWB")
+        LOCATE TODAYOFWEEK IN CHANGE(FULLSYNCDAYS, ',', @AM) SETTING TODAYOFWEEK.PTR ELSE TODAYOFWEEK.PTR = @FALSE
+        IF TODAYOFWEEK.PTR THEN 
+            IF LAST.TIME < FULLSYNCTIME THEN 
+                * Perform a full select.
+                FULL.SELECT = @TRUE
+            END ELSE 
+                * After set time of day, perform a select on customers edited today, since the last run.
+                QUIK.SELECT = @TRUE
+            END 
+        END ELSE 
+            FULL.SELECT = @FALSE
+            * NOT a Full select Day.  Is it a Partial select Day...
+            LOCATE TODAYOFWEEK IN CHANGE(PARTSYNCDAYS, ',', @AM) SETTING TODAYOFWEEK.PTR ELSE TODAYOFWEEK.PTR = @FALSE
+            IF TODAYOFWEEK.PTR THEN 
+                IF LAST.TIME < FULLSYNCTIME THEN 
+                    PART.SELECT = @TRUE
+                END ELSE 
+                    * After set time of day, perform a select on customers edited today, since the last run.
+                    QUIK.SELECT = @TRUE
+                END 
+            END 
+        END 
+    END ELSE 
+        NEXT.DATE = DATE()
+        BEGIN CASE 
+            CASE UPCASE(SELECT.TYPE) = "FULL"
+                FULL.SELECT = @TRUE
+                ADD.OUTPUT.TEXT = ("Full select indicated.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                
+            CASE UPCASE(SELECT.TYPE) = "PARTIAL"
+                PART.SELECT = @TRUE
+                ADD.OUTPUT.TEXT = ("Partial select indicated.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                LAST.DATE = DATE() - PARTSYNCWINDOW
+                IF (LAST.DATE # NEXT.DATE) THEN 
+                    *  Whole days if more than the current day.
+                    LAST.TIME = 1
+                END 
+                ADD.OUTPUT.TEXT = ("Sync window is ":PARTSYNCWINDOW:(" days.":SPACE(2)):OCONV(LAST.DATE,"D4/"):" - ":OCONV(NEXT.DATE,"D4/")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                
+            CASE UPCASE(SELECT.TYPE) = "QUICK"
+                QUIK.SELECT = @TRUE
+                ADD.OUTPUT.TEXT = ("Quick select indicated.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                IF (LAST.DATE # NEXT.DATE) THEN 
+                    *  Whole days if more than the current day.
+                    LAST.TIME = 1
+                END 
+        END CASE 
+    END 
+    
+    IF NOT( (PARTSELECTONE OR FULLSELECTONE OR QUIKSELECTONE OR ALLSSELECTEND) ) THEN 
+        * Simple select.  Failsafe if undefined in setup record.
+        ADD.OUTPUT.TEXT = ((SPACE(2):"Default SSELECT statement in use for this SELECT!")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        CMD1     =  'SELECT ENTITY WITH IS.CUSTOMER = "1" '
+        CMDZ     =  'SSELECT ENTITY WITH IS_BR_ENTITY NE "1" AND NAME NE "XFER]" '
+        CMDZ    :=  'AND EXCL_FROM_INDEX NE "1" AND IS_SHIP_TO = "1" '
+        CMDZ    :=  'AND AVALARA_USAGE_TYPE = "" AND TAX_STATE_CODES_ALL NE "" '
+        CMDZ    :=  'AND TAX_EXP_NBR_ALL NE "" BY ID_SORT'
+        GOTO BEGIN.SELECT
+    END 
+    BEGIN CASE 
+        CASE FULL.SELECT
+            CMD1     =  'SELECT ENTITY WITH ':FULLSELECTONE
+            ADD.OUTPUT.TEXT = ("Full Select") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            
+        CASE PART.SELECT
+            CMD1     =  'SELECT ENTITY WITH ':PARTSELECTONE
+            ADD.OUTPUT.TEXT = ("Partial Select") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            
+        CASE QUIK.SELECT
+            CMD1     =  'SELECT ENTITY WITH ':QUIKSELECTONE
+            IF QUIKSELECTTWO THEN 
+                CMD2    =   'SELECT ENTITY WITH ':QUIKSELECTTWO
+            END 
+            ADD.OUTPUT.TEXT = ("Quick Select") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END CASE 
+    CMDZ     = 'SSELECT ENTITY WITH ':ALLSSELECTEND
+    
+    CMD1 = CHANGE (CMD1, '$last.date$', LAST.DATE)
+    CMD1 = CHANGE (CMD1, '$next.date$', NEXT.DATE)
+    CMD1 = CHANGE (CMD1, '$last.time$', LAST.TIME)
+    CMD1 = CHANGE (CMD1, '$lastdatetime$', LAST.DATETIME)
+    
+    CMD2 = CHANGE (CMD2, '$last.date$', LAST.DATE)
+    CMD2 = CHANGE (CMD2, '$next.date$', NEXT.DATE)
+    CMD2 = CHANGE (CMD2, '$last.time$', LAST.TIME)
+    CMD2 = CHANGE (CMD2, '$lastdatetime$', LAST.DATETIME)
+
+BEGIN.SELECT:        
+
+    ADD.OUTPUT.TEXT = (CMD1) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (CMD2) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (CMDZ) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+    PHST.MSG = "Selecting..."
+    IF PHANTOM.PROC THEN 
+        WRITE PHST.MSG ON PHSTFILE, PID$
+    END 
+
+    EXECUTE CMD1 CAPTURING MSG1 RTNLIST VERBLIST1
+    IF CMD2 THEN 
+        EXECUTE CMD2 CAPTURING MSG2 PASSLIST VERBLIST1 RTNLIST VERBLIST1
+    END 
+    EXECUTE CMDZ CAPTURING MSG PASSLIST VERBLIST1
+    
+    MSG = TRIM (MSG, AM, "A")
+    MSG = FIELD (MSG, " ", 1)
+
+    PHST.MSG = MSG : " customer records selected."
+    IF PHANTOM.PROC THEN 
+        WRITE PHST.MSG ON PHSTFILE, PID$
+    END 
+    MSG = MSG : " customer records selected."
+    ADD.OUTPUT.TEXT = (MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+    SELECTE TO CUSTOMERLIST
+    RETURN
+***************************************************************************
+***************************************************************************
+
+* checksum: 5468
+* last change: 10/11/2022 10:39:36am
+* last compile: 10/11/2022 10:39:36am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.CUST.SELECT"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,INITIALIZE,SELECT.CUSTS,BEGIN.SELECT,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 6 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,INITIALIZE,SELECT.CUSTS,BEGIN.SELECT,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.CUST.SELECT"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.CUST.SELECT"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.CUST.SELECT"
+ 
+    RETURN

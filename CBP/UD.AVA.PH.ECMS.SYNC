@@ -1,0 +1,18 @@
+          PH.ARGS DRPT
+** Version# 0.0002 - 07/30/2021 - 06:26pm - KK05718 - eclipse
+** Copied from CBP UD.AVA.PHR.ECMS.SYNC Version# 0.0001[2] - 06/15/2021 - 05:13pm - KK05718 - eclipse
+** Copied from CBP AVA.PHR.ECMS Version# 0.0001 - 09/19/2019 - 08:44pm - KK05718 - eclipse
+*** V0.0002 Change - Custom Coding 072821 - 07/30/2021 - KK05718 - eclipse
+*** V0.0001 Change - Custom Coding 061521 - 06/15/2021 - KK05718 - eclipse
+
+*** Subroutine - UD.AVA.PHR.ECMS.SYNC
+*-------------------------------------------------------------------------*
+*** Runs the DATA SYNC, either scheduled or interactive.
+*-------------------------------------------------------------------------*
+*** Parameter Definitions
+*-------------------------------------------------------------------------*
+
+          UD.AVA.ECMS.SYNC
+
+          RETURN
+!KK05718~07/30/21~18:26

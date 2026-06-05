@@ -1,0 +1,485 @@
+    subroutine ud.ava.cert.json (json,cn,cert.id)
+
+* subroutine - ud.ava.cert.json
+
+*---------------------------program description---------------------------*
+* builds json document required to update a certificate via the Avalara
+* AvaTax API. 
+*--------------------------parameter definition---------------------------*
+* json - json record for new customer, customer, or Cert.          [out]
+* cn   - Customer number to process.                                [in]
+* cert.id - avatax cert.id being processed or RegionExemption num.  [in]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    init
+    prep.files
+    
+*** Lookup cert id in UD.AVALARA file.
+***   Else, get cert data from AVATAX API.  Match data to CN and Exempt 
+***   Cert data on customer record.  
+***      Else, No JSON.  Return.
+***   Build JSON from cert data in Eclipse.
+*** From @ID of UD.AVALARA record, match to CN.
+*** If matched, then get state and exemption number from @ID. 
+***   Else, No JSON.  
+*** If matched, then build JSON from cert data in Eclipse.  
+***   Else, no JSON.    
+    
+    proc.cert
+    json = certrec.json
+    
+finish:
+    sub::write.last.action (output.buffer, pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    sub::ut.tempfile.delete (temp.name, tempfile)
+    exit.sub
+
+***************************************************************************
+***************************************************************************
+init: * initialize
+    begin.date = date()
+    begin.time = int(time())
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+    pgm.name    =   "UD.AVA.CERT.JSON"
+    
+* objects
+    setting = new (setting, "AVATAX.ECMS.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        var.eff.date    = :: ("var.eff.date", "MO/DA/YR")
+        var.exp.date    = :: ("var.exp.days", "MO/31/YR")
+        avadateformat   = :: ("AvalaraDateFormat","D-YMD[Z4,2,2]")
+    }
+    if !enabled {
+        buffer ("Interface not enabled!" )
+        finish
+    }
+    
+    sub::realdate (def.eff.date, var.eff.date)
+    ifnot def.eff.date {
+        buffer ("  Bad Default Effective Date!  ")
+        def.eff.date = date()
+    }
+    
+* customer record
+    read cus.rec from cusfile,cn }{
+        buffer ("Unable to read customer record.  CN: ":cn)
+        return to finish
+    }
+    
+* variables    
+    phst.msg~~~
+    run.msg~~~
+    resp~~~
+    c.cert.cnt~
+    envelp      =  char (34)
+    
+* New customer and cert JSON.
+    certrec.json~~~
+    nrj.level   =  0
+    cur.cust~~~
+
+    cert.head~~~
+* build item portion of cert certrec.json.
+    cert.head<1>      =  "id"
+    cert.head<2>      =  "signedDate"
+    cert.head<3>      =  "expirationDate"
+    cert.head<4>      =  "filename"
+    cert.head<5>      =  "valid"
+    cert.head<6>      =  "exemptionNumber"
+    cert.head<7>      =  "exemptionReason"
+    cert.head<7, 2>   =  "name"
+    cert.head<8>      =  "taxNumberType"
+    cert.head<9>      =  "businessNumberType"
+    cert.head<10>     =  "exposureZone"
+    cert.head<10, 2>  =  "name"    
+    
+    cefd~~~
+    cexd~~~
+    bus.num.type~~~
+
+* pricing type to business type mapping variables.
+    read xref.types from ctrlfile, "UD.AVA.XREF.TYPES" }{
+        xref.types = ""
+    }
+    ava.bus.types = fetch (ctrlfile, 'UD.AVALARA.BUS.TYPE')
+    bus.num.type~~~
+    prc.type    =  cus.rec<35,1>
+    
+    locate prc.type in xref.types<1> setting type.pos }{
+        type.pos = ''
+    }
+    bus.type    =   xref.types<2,type.pos>
+    if !bus.type {
+        *bus.num.type    =   trim (prc.type)
+        bus.num.type    =   "Other"
+    }{
+        type.name =   xlate.vm (bus.type, ava.bus.types<1>, ava.bus.types<2>)
+        if type.name {
+            change (type.name, '-', ' ')
+            trim (type.name)
+            bus.num.type    =   type.name
+        }
+    }
+
+* variables for api calls and caching.
+    gl.br          =  cus.rec<53>
+    if !gl.br {
+        gl.br = "1000"
+    }
+    sub::ud.ava.get.company.id (gl.br, comp.id)
+    sub::ud.ava.ezones (exp.zones)
+    e.reg       =  exp.zones<1>
+    e.names     =  exp.zones<2>
+    ezone.ct =  dcount (e.reg, vm)
+
+ return
+
+***************************************************************************
+prep.files:
+**          read vst from statfile,'valid.us.states' else vst = ''
+    read vst from ctrlfile, "VALID.US.STATES" }{
+        vst = ""
+    }
+
+    sub::ut.open.file ("UD.AVALARA", avaifile, error.message, yes)
+    if have.error {
+        buffer ("Unable to open UD.AVALARA.")
+        goto finish
+    }
+    
+    sub::ut.open.file ("UD.AVALOG", avalogfile, error.message, yes)
+    if have.error {
+        buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+        goto finish
+    }
+
+ return
+***************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+proc.cert:
+    found.cert~
+    exempt.search~
+    cert.reg~~~
+    cert.num~~~
+    ifnotnum cert.id {
+        exempt.search~~
+        goto skip.select
+    }
+
+    cmd = 'SELECT UD.AVALARA WITH AVACERT_ID = "':cert.id:'"'
+    execute cmd capturing msg 
+    aid = each.next () {
+        readv aid.cert.id from avaifile,aid,1 {
+            if found.cert {
+                buffer ('Cert with Duplicate Cert ID found in UD.AVALARA: ':aid)
+                * Sticking with first match.
+                continue
+            }
+        }{
+            continue
+        }
+        found.cert = (aid = cert.id)
+        if found.cert {
+            buffer ('Cert found:  ':aid)
+        }
+    }
+
+skip.select:
+    if found.cert {
+        * Build cert json from Customer Record if matched.
+        cert.reg    =   field (aid,'~',2)[1,2]
+        cert.num    =   trim (field (aid,'~',2)[3,99])
+    }{
+        ifnot exempt.search {
+            * Get Cert from API Call, to match on.
+            buffer ('  Attempting match on portal certificate.')
+            sub::ud.ava.get.certificate comp.Id,cert.id,,resp,error.message
+            if have.error {
+                buffer ("Error getting cert from API. UD.AVA.GET.CERTIFICATE")
+            }{
+                buffer ('  No error accessing Portal.  Parsing Cert.')
+                parse.certificate
+                if c.data<1> {
+                    buffer ("API Cert ID: ":c.data<1>)
+                    cert.reg    =   c.data<4>
+                    buffer ("cert.reg: ":cert.reg)
+                    cert.num    =   c.data<5>
+                    buffer ("cert.num: ":cert.num)
+                }
+            }
+        }{
+            * If a Region:ExemptNumber ID was provided.  Look in AVALARA_DATA.
+            if cert.id {
+                buffer ("Region:ExemptNumber provided for lookup.  ":cert.id)
+                cert.reg    =   cert.id[1,2]
+                cert.num    =   trim (cert.id[3,99])
+                
+            }{
+                *No data to look up.  Exit.
+                buffer ("No data to lookup.  Exiting.")
+                finish
+            }
+        }
+
+    }
+    c.cert.cnt = dcount(cus.rec<33>,vm)
+    if c.cert.cnt = 0 {
+        buffer ("No certificates on customer record.")
+        return
+    }
+    
+    * get all certificates for customer.
+    for c.cert.no =   1 to c.cert.cnt {    
+        * find the one cert we need to process.  Process it.
+        c.cert.reg = cus.rec<33,c.cert.no>
+        c.cert.num = upcase(trim(cus.rec<34,c.cert.no>))
+        * match Region first... no region match move on.
+        next.if cert.reg # c.cert.reg 
+        * Correct for any case issues
+        if c.cert.num # cus.rec<34,c.cert.no> {
+            * Write back upcased, and trimmed Exemption number.
+            unfetch (c.cert.num, cusfile, cn, 34, c.cert.no)
+        }
+        * match on exemption number
+        if (upcase(trim(cert.num))) = c.cert.num {
+            *Found
+            found.cert~~
+            exit
+        }
+    }
+    
+    ifnot found.cert {
+        *  Not found.  Return with no JSON.
+        buffer ('Cert:  "':cert.num:'"  "':cus.rec<34>:'"')
+        buffer ("Unable to locate matching certificate in customer certificates.")
+        return
+    }
+    
+    * Once we find a match in the above For Loop, c.cert.no is set to the position of that match.
+    * At this point we are not in a loop.
+    
+    c.cert.region       =  (upcase(trim(cus.rec<33,c.cert.no>)))
+    c.cert.number       =  (upcase(trim(cus.rec<34,c.cert.no>)))
+
+    aid =   cn:"~":c.cert.region:c.cert.number
+    eff.date    =   fetch (avaifile, aid, 2)
+    ifnot eff.date {
+        eff.date    =   def.eff.date
+    }
+    
+    * Skip any deleted or expired certificates.
+    *exp.date    =   cus.rec<172,c.cert.no>
+    * Expiring all certificates to clear portal.
+    exp.date    =  20821
+    exp.date   +=  0
+    if !exp.date {
+        buffer ("No valid expiration date on customer rec.")
+        sub::realdate (defaultexpire, var.exp.date)
+        exp.date = fetch.default (avaifile, aid, 3, defaultexpire)
+        if exp.date = defaultexpire {
+            buffer ("No expiration recorded in UD.AVALARA.")
+        }
+        * No expiration date on customer cert record, set it to match portal or default.
+        cus.rec<172,c.cert.no> = exp.date
+        read nothing from avaifile,aid {
+            unfetch (exp.date, avaifile,aid,3)
+        }
+        * Write evaluated expiration date to customer.
+        unfetch (exp.date, cusfile,cn,172, c.cert.no)
+
+    }
+    if index(eff.date,"/",1) {
+        cefd        =   iconv(eff.date,"D4/")
+    }{
+        cefd        =   eff.date
+    }
+    if index(exp.date,"/",1) {
+        cexd        =   iconv(exp.date,"D4/")
+    }{ 
+        cexd        =   exp.date
+    }
+    
+    if (cexd < date()) | (cefd > cexd) {
+        buffer ("Expired or invalid effective date on cert.")
+        * Return with no JSON.
+        return
+    }
+        
+    cur.cert~~~
+    
+    cur.cert<2>       =  oconv(cefd,"D-YMD[Z4,2,2]"):"T00:00:00"
+    cur.cert<3>       =  oconv(cexd,"D-YMD[Z4,2,2]"):"T00:00:00"
+    
+    * Is cert blank?  Use for future checking.
+    cert.blank        =  len(trim(c.cert.number)) = 0
+    sub::ud.ava.taxcert.img (cn, cert.number, cert.filename)
+    cur.cert<4>       =  cert.filename
+    cert.filename     =  ""
+    cur.cert<5>       =  "true"
+    cur.cert<6>       =  c.cert.number
+    exempt.reason     =  field(cus.rec<105,c.cert.no>,'=',1)
+    *Test for a Type other than G or I, Resale or Inducstrial/mfg
+    wrng.reas = (exempt.reason # "G") & (exempt.reason # "I")
+    *Test for DEN Type.  DEN is allowed here.
+    wrng.reas = (wrng.reas) & (exempt.reason # "DEN")
+    *Skip if Blank, NOT G, NOT I, NOT DEN.
+    skip.cert = (cert.blank | wrng.reas)
+    if c.cert.region = "CO" and exempt.reason = "DEN" {
+    *Skip if DEN, but a City of Denver exemption exists.
+        skip.cert = skip.cert & (cus.rec<175,c.cert.no,1> = "DENVER")
+    }
+    if skip.cert {
+        buffer ("Skipping cert based on skip criteria.")
+        return
+    }
+    
+    cases {
+        case exempt.reason    =  "I"
+            cert.reason = "INDUSTRIAL PROD/MANUFACTURERS"
+
+        case exempt.reason    =  "G"
+            cert.reason = "RESALE"
+    }
+    cur.cert<7, 2> =  cert.reason
+      
+    cur.cert<8>      =  "TIN"
+    cur.cert<9>      =  bus.num.type
+    
+    * exposure zones.
+    locate c.cert.region in e.reg<1> setting pos {
+    }
+    exp.zone.name        =  e.names<1, pos>
+        
+    cur.cert<10, 2> =  exp.zone.name
+        
+start.json:
+    buffer ("Starting JSON.")
+
+    sub::ut.add.json (nrj.level, certrec.json, "", "", 1)
+    cert.am.count = dcount (cur.cert, am)
+    for cert.am   =  1 to cert.am.count {
+        last.am = (cert.am = cert.am.count)
+        mv.ct = dcount (cur.cert<cert.am>, vm)
+        if mv.ct = 2 {
+            if (cur.cert<cert.am, 2>) {
+                sub::ut.add.json (nrj.level, certrec.json, cert.head<cert.am, 1>, "", 6)
+                sub::ut.add.json (nrj.level, certrec.json, cert.head<cert.am, 2>, cur.cert<cert.am, 2>, "", yes)
+                sub::ut.add.json (nrj.level, certrec.json, "", "", 2, last.am)
+            }
+        }{
+            if (cur.cert<cert.am>) {
+                sub::ut.add.json (nrj.level, certrec.json, cert.head<cert.am>, cur.cert<cert.am>, "", last.am)
+            }
+        }
+    }
+
+    sub::ut.add.json (nrj.level, certrec.json, "", "", 2, yes)
+
+end.json:
+    msg.out = lower(certrec.json)
+    buffer (msg.out)
+    buffer ("JSON Ended.")
+
+ return
+***************************************************************************
+parse.certificate:
+    
+    c.data~~~
+    ci.ct~
+    sub::ut.parse.json (resp,cert.items,cert.values)
+    ci.ct = dcount (cert.items,am)
+    buffer ("parsing ":ci.ct:" json items from the cert.")
+    
+    for citem = 1 to ci.ct {
+        it.name = upcase(cert.items<citem>)
+        it.val  = cert.values<citem>
+        cases {
+            case it.name = "ID"
+                c.data<1>  =   it.val
+                buffer ("ID: ":it.val)
+            case it.name = "SIGNEDDATE" 
+                c.data<7>  =   it.val
+            case it.name = "EXPIRATIONDATE"
+                c.data<8>  =   it.val
+            case it.name = "EXEMPTIONNUMBER"
+                c.data<5>  =   it.val
+                buffer ("Exemption Number: ":it.val)
+            case it.name = "EXEMPTIONREASON"
+                parse.exemption.reason
+            case it.name = "TAXNUMBERTYPE"
+                c.data<6>  =   it.val
+            case it.name = "BUSINESSNUMBERTYPE"
+                if num(it.val) {
+                    c.data<13> =   it.val
+                    c.data<14>~~~
+                }{
+                    c.data<13> =   "20"
+                    c.data<14> =   it.val
+                }
+            case it.name = "EXPOSUREZONE"
+                parse.exposure.zone
+            case otherwise
+                * Do nothing.
+        }
+    }
+        
+ return
+***************************************************************************
+parse.exemption.reason:
+    sub::ut.parse.json (it.val, ex.items, ex.values)
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    eitem.ct = dcount (ex.items,am)
+    for eitem = 1 to eitem.ct {
+        eit.name    = upcase (ex.items<eitem>)
+        eit.val     = ex.values<eitem>
+        if eit.name = "NAME" {
+            if eit.val = "RESALE" {
+                c.data<15> =   "G"
+            }{
+                if eit.val = "INDUSTRIAL PROD/MANUFACTURERS" {
+                    c.data<15> = "I"
+                }
+            }
+        }
+    }
+
+ return
+**************************************************************************
+parse.exposure.zone:
+    valid.ezones~~~
+    sub::ut.parse.json (it.val, ex.items, ex.values)
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    eitem.ct = dcount (ex.items,am)
+
+    if eitem.ct & !valid.ezones {
+        sub::ud.ava.ezones (valid.ezones)
+    }
+    for eitem = 1 to eitem.ct {
+        eit.name    = ex.items<eitem>
+        eit.val     = ex.values<eitem>
+        
+        if upcase(eit.name) = "NAME" {
+            locate eit.val in valid.ezones<2> setting val {
+                c.data<4>  =   valid.ezones<1,val>
+                c.data<3>  =   "US"
+            }
+        }
+    }
+    
+ return
+**************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+
+* checksum: 23704
+* last change: 12/23/2025 06:42:12pm
+* last compile: 10/11/2022 10:39:34am

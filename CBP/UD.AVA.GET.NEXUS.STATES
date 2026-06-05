@@ -1,0 +1,305 @@
+    SUBROUTINE UD.AVA.GET.NEXUS.STATES  (STATES, GL.BR, LOG.ID, LOG.REC.ID)
+** Version# 0.0001[50] - 09/20/25 - 05:06pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.GET.NEXUS.STATES at 05:06pm 09/20/2025 b*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.GET.NEXUS.STATES   *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 21456
+* last change: 10/11/2022 10:39:46am
+* last compile: 10/11/2022 10:39:46am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST to get the CompanyId from the CompanyCode               *
+*                                                                        *
+**************************************************************************
+* GL.BR              Branch for call... Read default branch from setup   *
+* STATES             Nexus States as requested                           *
+**************************************************************************
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    IF UNASSIGNED(FILTERS) THEN FILTERS = '' ELSE IF FILTERS = @NULL THEN FILTERS = ''
+    IF UNASSIGNED(RESP) THEN RESP = '' ELSE IF RESP = @NULL THEN RESP = ''
+    STATES = ''
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+    CACHED.CTRL = ''
+    CACHED.DATE = @FALSE
+    CACHED.TIME = @FALSE
+    PGM.NAME        =   'UD.AVA.GET.NEXUS.STATES'
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    * Store time stamp of current run.  Must be first to use caching of results.
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),'D4/'):" ":OCONV(TIME(),'MT')) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (DATE():" ":TIME()) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+* Pull login credentials and base URL from Control Record.
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.API.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, LIC.OR, "License", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CTRL.ID, "AvaTaxOptions" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULT.BR, "DefaultBranch" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CACHE.SECONDS, "GetNexusCacheSec", 300 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, API.PGM, "GetNexusApiPgm" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CACHED.CONTROL, "NexusCacheCtrlRecord" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+*       company.id = :: *** possibly need api to read companies, selecting dynamically.
+*   END.WITH
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+*   WITH MANAGER::OPEN
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+*   END.WITH
+    
+    GOSUB CHECK.CACHED.CONTROL
+    
+    IF STATES THEN 
+        ADD.OUTPUT.TEXT = ("Cached states from control record used.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO FINISH
+    END 
+    
+    READ SETTINGS FROM CTRLFILE, CTRL.ID ELSE 
+        SETTINGS = ''
+    END 
+    
+*  Set default branch in case GL.BR is not passed in.
+    IF UNASSIGNED(GL.BR) THEN GL.BR = DEFAULT.BR ELSE IF GL.BR = @NULL THEN GL.BR = DEFAULT.BR
+    COMP.ID = ''
+
+    UD.AVA.GET.COMPANY.ID GL.BR, COMP.ID
+        
+*  Read only states from API call to AVATAX.    
+    
+    FILTERS =   "jurisTypeId eq STA"
+
+* Store filters for comparison in cache.  If filters don't match, we need a fresh read.
+    ADD.OUTPUT.TEXT = (FILTERS) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    GOSUB CHECK.CACHED.RESP
+    
+    CALL @API.PGM (COMP.ID,'',FILTERS,'','','',RESP,LOG.ID,LOG.REC.ID)
+
+PARSE.JSON: 
+*  Parse JSON.  First item is company count.    
+    UT.PARSE.JSON RESP, ITEMS, VALUES
+    
+    IF ITEMS<1>  = "@recordsetCount" THEN 
+        NEX.CT =   VALUES<1>
+    END ELSE 
+        IF ITEMS<1>[1,5] = "error" THEN 
+            ADD.OUTPUT.TEXT = (("Error.":SPACE(2):"See Response.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOSUB FINISH
+        END 
+        NEX.CT =   1
+    END 
+    IF NOT( NEX.CT ) THEN 
+        ADD.OUTPUT.TEXT = (("Error.":SPACE(2):"No company nexus returned.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+*  Re-parse second item of JSON.  Contains count qty of Company Objects.    
+    UT.PARSE.JSON VALUES<2>, ITEMS, NEW.VALUES
+    VALUES      =   NEW.VALUES
+*  We filtered in the API call to STA States only  If the filter failed, the call clears the filter
+*  then retries.  In that event we could get a list of ALL company Nexus'  Loop through whatever is returned.    
+*  Loop through objects.  Parse each object.  Determine if Nexus is STA.
+*  Return Nexus Region if matched.    
+    FOR X = 1 TO NEX.CT 
+        UT.PARSE.JSON ITEMS<X>, NEW.ITEMS, NEW.VALUES
+        LOCATE 'jurisTypeId' IN NEW.ITEMS SETTING RESULT.POS THEN 
+            CHECK.TYPE = NEW.VALUES<RESULT.POS>
+            IF CHECK.TYPE = 'STA' THEN 
+                LOCATE 'region' IN NEW.ITEMS SETTING RESULT.POS THEN 
+                    IF STATES = '' THEN STATES = (NEW.VALUES<RESULT.POS>) ELSE STATES := @AM : (NEW.VALUES<RESULT.POS>)
+                END 
+            END 
+        END 
+    NEXT X 
+    
+    IF NOT( STATES ) THEN 
+        ADD.OUTPUT.TEXT = ("No Nexus States found.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END ELSE 
+        * Write states to Cache control record.
+        IF CACHED.CONTROL <> '' THEN 
+            CACHED.CTRL = ''
+            CACHED.CTRL<1,1>    =   BEGIN.DATE
+            CACHED.CTRL<1,2>    =   BEGIN.TIME
+            CACHED.CTRL<2>      =   LOWER(STATES)
+            WRITE (CACHED.CTRL) ON CTRLFILE, (CACHED.CONTROL)
+        END 
+    END 
+    
+FINISH:
+    ADD.OUTPUT.TEXT = (LOWER(RESP)) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+**************************************************************************
+CHECK.CACHED.CONTROL:
+    IF CACHED.CONTROL = '' THEN 
+        ADD.OUTPUT.TEXT = ("No Cache Control Record defined.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    IF CACHED.CONTROL = '' THEN RETURN
+    
+    READ CACHED.CTRL FROM CTRLFILE, (CACHED.CONTROL) ELSE CACHED.CTRL = ''
+    CACHED.DATE =   CACHED.CTRL<1,1>
+    CACHED.TIME =   CACHED.CTRL<1,2>
+    TIMESINCEREAD = (DATE() - (CACHED.DATE)) * 24 * 60 * 60 + INT(TIME() - (CACHED.TIME) + .5)
+    IF TIMESINCEREAD <= CACHE.SECONDS THEN 
+        STATES = RAISE(CACHED.CTRL<2>)
+    END 
+    
+    RETURN
+**************************************************************************
+CHECK.CACHED.RESP:
+    READ.LAST.ACTION TIMESTAMP, API.PGM, @FALSE, 1
+    IF TIMESTAMP THEN 
+        TS.DATE =   FIELD(TIMESTAMP," ",1)
+        TS.TIME =   FIELD(TIMESTAMP," ",2)
+        IF TS.DATE  =   DATE() THEN 
+            IF (TIME() - TS.TIME) < CACHE.SECONDS THEN 
+                READ.LAST.ACTION OLD.FILTER, API.PGM, @FALSE, 2
+                IF OLD.FILTER<1,2> = FILTERS THEN 
+                    READ.LAST.ACTION LOG.ENTRY, API.PGM, @FALSE
+                    LOG.CT = DCOUNT (LOG.ENTRY,AM)
+                    FOR LOG.LN = 1 TO LOG.CT 
+                        IF UPCASE(LOG.ENTRY<LOG.LN>[1,17]) = '{"@RECORDSETCOUNT' THEN 
+                            RESP = LOG.ENTRY<LOG.LN,1>
+                        END 
+                    NEXT LOG.LN 
+                END 
+            END 
+        END 
+    END 
+    * If we get here with a response, we are finished. 
+    IF RESP THEN 
+        ADD.OUTPUT.TEXT = ("Cached response used.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN TO PARSE.JSON
+    END ELSE 
+        ADD.OUTPUT.TEXT = ("Get fresh response.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+RETURN
+
+* checksum: 21456
+* last change: 10/11/2022 10:39:46am
+* last compile: 10/11/2022 10:39:46am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.GET.NEXUS.STATES"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "PARSE.JSON,FINISH,CHECK.CACHED.CONTROL,CHECK.CACHED.RESP,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 6 THEN
+        ON ERROR.THROW.PTR GOSUB PARSE.JSON,FINISH,CHECK.CACHED.CONTROL,CHECK.CACHED.RESP,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.GET.NEXUS.STATES"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.GET.NEXUS.STATES"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.GET.NEXUS.STATES"
+ 
+    RETURN

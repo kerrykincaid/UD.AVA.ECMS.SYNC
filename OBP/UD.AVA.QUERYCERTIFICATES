@@ -1,0 +1,190 @@
+    subroutine ud.ava.querycertificates (company.Id,includes,filters,top,skip,orderby,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  QueryCertificates                   *
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* includes           comma delimited list of api $includes               *
+* filters            list of filters.  (eg. $filter=region eq 'NC')      *
+* top                page size.  (eg. $top=500)                          *
+* skip               records to skip to start page (eg. $skip=1000) units*
+*                       of top.                                          *
+* orderby            A comma separated list of sort statements in the    *
+*                       format (fieldname) [ASC|DESC], for example id ASC*
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** List all certificates for a company
+*** </summary>
+*** <remarks>
+*** List all certificates recorded by a company
+***  
+*** A certificate is a document stored in either AvaTax Exemptions or CertCapture. The certificate document
+*** can contain information about a customer's eligibility for exemption from sales or use taxes based on
+*** criteria you specify when you store the certificate. To view or manage your certificates directly, please
+*** log onto the administrative website for the product you purchased.
+***  
+*** You can use the `$include` parameter to fetch the following additional objects for expansion:
+***  
+*** * customers - Retrieves the list of customers linked to the certificate.
+*** * po_numbers - Retrieves all PO numbers tied to the certificate.
+*** * attributes - Retrieves all attributes applied to the certificate.
+***  
+*** </remarks>
+*** <param name="companyId">The ID number of the company to search</param>
+*** <param name="include">OPTIONAL: A comma separated list of special fetch options. You can specify one or more of the following:
+***  
+***  * customers - Retrieves the list of customers linked to the certificate.
+***  * po_numbers - Retrieves all PO numbers tied to the certificate.
+***  * attributes - Retrieves all attributes applied to the certificate.</param>
+*** <param name="filter">A filter statement to identify specific records to retrieve. For more information on filtering, see [Filtering in REST](http://developer.avalara.com/avatax/filtering-in-rest/).<br />*Not filterable:* exemptionNumber, status, ecmsId, ecmsStatus, pdf, pages</param>
+*** <param name="top">If nonzero, return no more than this number of results. Used with `$skip` to provide pagination for large datasets. Unless otherwise specified, the maximum number of records that can be returned from an API call is 1,000 records.</param>
+*** <param name="skip">If nonzero, skip this number of results before returning data. Used with `$top` to provide pagination for large datasets.</param>
+*** <param name="orderBy">A comma separated list of sort statements in the format `(fieldname) [ASC|DESC]`, for example `id ASC`.</param>
+*        public FetchResult<CertificateModel> QueryCertificates(Int32 companyId, String include, String filter, Int32? top, Int32? skip, String orderBy)
+*        {
+*            var path = new AvaTaxPath("/api/v2/companies/{companyId}/certificates");
+*            path.ApplyField("companyId", companyId);
+*            path.AddQuery("$include", include);
+*            path.AddQuery("$filter", filter);
+*            path.AddQuery("$top", top);
+*            path.AddQuery("$skip", skip);
+*            path.AddQuery("$orderBy", orderBy);
+*            return RestCall<FetchResult<CertificateModel>>("GET", path, null);
+*        }
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+    
+    change (method, "$company.id$", company.id)
+    buffer ("Method URL used is: ":method)
+
+    set.params
+    buffer (params)
+    sub::ava.do.request (http.type,method,,params,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+    }
+
+finish:
+    buffer (lower(resp))
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.QUERYCERTIFICATES'
+    skip.reason~~~
+    params~~~
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        lic.or          = :: ("License", 0, 1)
+        ctrl.id         = :: ("AvaTaxOptions")
+        page.size       = :: ("PageSize",100)
+        method          = :: ("CertsGetBase")
+        valid.includes  = :: ("CertsGetInclude")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    read settings from ctrlfile, ctrl.id }{
+        return
+    }
+    
+*  Variables
+    final.includes~~~
+    downcase (includes)
+    downcase (filters)
+    
+    orderby~~~
+    if not(top) {
+        top =   page.size
+    }
+    
+    http.type       =   'GET'
+    pgm.name        =   'UD.AVA.QUERYCERTIFICATES'
+ 
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+**************************************************************************
+set.params:
+    params~~~
+    *** Validate passed in includes, add to params as comma delim list if valid.
+    if includes {
+        one.include = each.comma (includes, inc.loop) {
+            if index(valid.includes,one.include,1) {
+                final.includes = add.comma (one.include)
+            }
+        }
+        if final.includes {
+            param.pair = "$include":vm:final.includes
+            params<-1> = param.pair
+        }
+    }
+    *** Assume filters are valid.  Otherwise we need to parse and validate according to API.  TODO.
+    if filters {
+        param.pair = "$filter":vm:filters
+        params<-1> = param.pair
+    }
+    if top {
+        param.pair  = "$top":vm:top
+        params<-1> = param.pair
+    }
+    if skip {
+        param.pair  = "$skip":vm:skip
+        params<-1>  = param.pair
+    }
+    if orderby {
+        param.pair  = "$orderBy":vm:orderby
+        params<-1>  = param.pair
+    }
+    
+ return
+
+* checksum: 6005
+* last change: 10/11/2022 10:39:54am
+* last compile: 10/11/2022 10:39:54am

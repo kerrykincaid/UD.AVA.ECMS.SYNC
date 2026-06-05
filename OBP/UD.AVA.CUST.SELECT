@@ -1,0 +1,235 @@
+    subroutine ud.ava.cust.select (customerlist, select.type)
+ 
+* subroutine - ud.ava.cust.select
+
+*---------------------------program description---------------------------*
+*  Selects customer records for ud.ava.ecms.sync.
+*--------------------------parameter definition---------------------------*
+* customerlist -  Select list of customers to be processed.         [out]
+* select.ype   -  Full, Partial, or Quick.  Full and Partial both   [in]
+*   perform a full select to match the FULL or PARTIAL sync of 
+*   UD.AVA.ECMS.SYNC.  Quick only selects customers edited within 
+*   Window.  If select.type not passed, select type will be determined
+*   from setting in setup record and time since last select.
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    initialize
+    phst.msg = "Selecting Customers..."
+    if phantom.proc {
+        write phst.msg on phstfile, pid$
+    }
+    select.custs
+
+***************************************************************************
+section cleanup:    *******************************************************
+***************************************************************************
+finish:
+
+    sub::write.last.action (output.buffer, pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+
+***************************************************************************
+section startup routines: *************************************************
+***************************************************************************
+initialize:
+    begin.date = date()
+    begin.time = int(time())
+    pgm.name    =   "UD.AVA.CUST.SELECT"
+    
+* objects
+    buffer.clear ()
+    buffer (oconv (date() , "D4/"))
+    buffer (oconv (time(), "MTHS"))
+    
+    setting = new (setting, "AVATAX.ECMS.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        troubleshooting = :: ("TroubleShooting",0,1)
+        fullsynctime    = :: ("FullSyncPickTime")
+        fullsyncdays    = :: ("FullSyncDayofWeek")
+        partsyncdays    = :: ("PartSyncDayofWeek")
+        partsyncwindow  = :: ("PartialWindow",0)
+        fullselectone   = :: ("FullSelectOne")
+        partselectone   = :: ("PartSelectOne")
+        quikselectone   = :: ("QuikSelectOne")
+        quikselecttwo   = :: ("QuikSelectTwo", @false)
+        allsselectend   = :: ("allsselectend")
+
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    if !enabled {
+        buffer ("Interface not enabled!")
+        goto finish
+    }
+    
+* variables    
+
+    phst.msg~~~
+    cmd1~~~
+    cmd2~~~
+    cmdz~~~
+    last.date~~~
+    next.date~~~
+    last.time~~~
+    assign(customerlist)
+    assign(select.type)
+    full.select~
+    part.select~
+    quik.select~   
+    
+    * read last date and time of last customer select
+    sub::read.last.action (last.date, pgm.name,@false,1)
+    sub::read.last.action (last.time, pgm.name,0,2)
+    
+    last.date = iconv (last.date, "D4/")
+    last.time = iconv (last.time, "MTHS")
+    ifnot (last.date = date()) {
+        last.date = date()
+        last.time = 1
+    }
+    sub::get.datetime (last.date, last.time, last.datetime)
+    
+    
+  return
+***************************************************************************
+section select processing: ************************************************
+***************************************************************************
+select.custs:
+    ifnot select.type {
+        
+        ToDayOfWeek = oconv(date(), "DWB")
+        xlate.comma (ToDayOfWeek, FullSyncDays)
+        if ToDayOfWeek.ptr {
+            if last.time < FullSyncTime {
+                * Perform a full select.
+                full.select~~
+            }{
+                * After set time of day, perform a select on customers edited today, since the last run.
+                quik.select~~
+            }
+        }{
+            full.select~
+            * NOT a Full select Day.  Is it a Partial select Day...
+            xlate.comma (ToDayOfWeek, PartSyncDays)
+            if ToDayOfWeek.ptr {
+                if last.time < FullSyncTime {
+                    part.select~~
+                }{
+                    * After set time of day, perform a select on customers edited today, since the last run.
+                    quik.select~~
+                }
+            }
+        }
+    }{
+        next.date = date()
+        cases {
+            case upcase(select.type) = "FULL"
+                full.select~~
+                buffer ("Full select indicated.")
+                
+            case upcase(select.type) = "PARTIAL"
+                part.select~~
+                buffer ("Partial select indicated.")
+                last.date = date() - partsyncwindow
+                if (last.date # next.date) {
+                    *  Whole days if more than the current day.
+                    last.time = 1
+                }
+                buffer ("Sync window is ":partsyncwindow:" days.  ":oconv (last.date, "D4/"):" - ":oconv (next.date, "D4/"))
+                
+            case upcase(select.type) = "QUICK"
+                quik.select~~
+                buffer ("Quick select indicated.")
+                if (last.date # next.date) {
+                    *  Whole days if more than the current day.
+                    last.time = 1
+                }
+        }
+    }
+    
+    ifnot (partselectone | fullselectone | quikselectone | allsselectend) {
+        * Simple select.  Failsafe if undefined in setup record.
+        buffer ("  Default SSELECT statement in use for this SELECT!")
+        cmd1     =  'SELECT ENTITY WITH IS.CUSTOMER = "1" '
+        cmdz     =  'SSELECT ENTITY WITH IS_BR_ENTITY NE "1" AND NAME NE "XFER]" '
+        cmdz    :=  'AND EXCL_FROM_INDEX NE "1" AND IS_SHIP_TO = "1" '
+        cmdz    :=  'AND AVALARA_USAGE_TYPE = "" AND TAX_STATE_CODES_ALL NE "" '
+        cmdz    :=  'AND TAX_EXP_NBR_ALL NE "" BY ID_SORT'
+        goto begin.select
+    }
+    cases {
+        case full.select
+            cmd1     =  'SELECT ENTITY WITH ':fullselectone
+            buffer ("Full Select")
+            
+        case part.select
+            cmd1     =  'SELECT ENTITY WITH ':partselectone
+            buffer ("Partial Select")
+            
+        case quik.select
+            cmd1     =  'SELECT ENTITY WITH ':quikselectone
+            if quikselecttwo {
+                cmd2    =   'SELECT ENTITY WITH ':quikselecttwo
+            }
+            buffer ("Quick Select")
+    }
+    cmdz     = 'SSELECT ENTITY WITH ':allsselectend
+    
+    change (cmd1, '$last.date$', last.date)
+    change (cmd1, '$next.date$', next.date)
+    change (cmd1, '$last.time$', last.time)
+    change (cmd1, '$lastdatetime$', last.datetime)
+    
+    change (cmd2, '$last.date$', last.date)
+    change (cmd2, '$next.date$', next.date)
+    change (cmd2, '$last.time$', last.time)
+    change (cmd2, '$lastdatetime$', last.datetime)
+
+begin.select:        
+
+    buffer (cmd1)
+    buffer (cmd2)
+    buffer (cmdz)
+
+    phst.msg = "Selecting..."
+    if phantom.proc {
+        write phst.msg on phstfile, pid$
+    }
+
+    execute cmd1 capturing msg1 rtnlist verblist1
+    if cmd2 {
+        execute cmd2 capturing msg2 passlist verblist1 rtnlist verblist1
+    }
+    execute cmdz capturing msg passlist verblist1
+    
+    msg = trim (msg, am, "A")
+    msg = field (msg, " ", 1)
+
+    phst.msg = msg : " customer records selected."
+    if phantom.proc {
+        write phst.msg on phstfile, pid$
+    }
+    msg = msg : " customer records selected."
+    buffer (msg)
+
+    selecte to customerlist
+    return
+***************************************************************************
+***************************************************************************
+
+* checksum: 5468
+* last change: 10/11/2022 10:39:36am
+* last compile: 10/11/2022 10:39:36am

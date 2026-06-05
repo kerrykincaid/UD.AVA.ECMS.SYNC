@@ -1,0 +1,367 @@
+    subroutine ud.ava.ecms.bld.rec (record.id, ecms.record)
+ 
+* subroutine - ud.ava.ecms.sync
+
+*---------------------------program description---------------------------*
+*  Build the ECMS record for comparison.
+*--------------------------parameter definition---------------------------*
+* record.id -                                                     [in] 
+* ecms.record -                                                   [in/out]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+    initialize
+    ecms.data = ecms.record
+    
+    phst.msg = "Processing export records..."
+* All the magic happens here.    
+    proc.one
+    
+    ecms.record =   ecms.data
+
+***************************************************************************
+section cleanup:    *******************************************************
+***************************************************************************
+finish:
+
+    buffer ("Build complete.")
+    
+    sub::write.last.action (output.buffer, pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+
+***************************************************************************
+section startup routines: *************************************************
+***************************************************************************
+initialize:
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   "UD.AVA.ECMS.BLD.REC"
+
+* objects
+    buffer.clear ()
+    buffer ("DATE: " : oconv (date() , "D4/"))
+    buffer ("TIME: " : oconv (begin.time, "MTHS"))
+    
+    setting = new (setting, "AVATAX.ECMS.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        sv.gl.br        = :: ("DefaultBranch", "1000")
+        defaulteffect   = :: ("var.eff.date", "-1/01/YR")
+        defaultexpire   = :: ("var.exp.date", "MO/31/YR")
+        new.batch.size  = :: ("NewCustBatchSize", 10)
+        troubleshooting = :: ("TroubleShooting",0,1)
+        * Record field tracking to determine if changes are to customer data, or certificate data.    
+        rec.fields~~~
+        rec.fields<1>   = :: ("CustomerFields")
+        rec.fields<2>   = :: ("CertificateFields")
+        comma.vm (rec.fields)
+    }
+    if !enabled {
+        buffer ("Interface not enabled!")
+        finish
+    }
+
+    manager =   new (file.manager)
+    
+* variables    
+    cn~~~
+    ecms.data~~~
+    sv.comp.code~
+    sv.hbr~
+    br.comp.xref~~~
+    
+* valid states.
+    read vst from ctrlfile, "VALID.US.STATES" }{
+        vst = ""
+    }
+* pricing type to business type mapping variables.
+    read xref.types from ctrlfile, "UD.AVA.XREF.TYPES" }{
+        xref.types~~~
+    }
+    bus.type~~~
+    prc.type~~~    
+    
+* variables for api calls and caching.
+    gl.br~~~
+    compid~
+
+    buffer ("Initialized")
+    
+* files
+    prep.files    
+    
+  return
+
+***************************************************************************
+prep.files:
+
+* files
+    with manager::open {
+        
+        avaidfile = :: ("UD.AVALARA")
+        if have.error {
+            goto finish
+        }
+        
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+        
+    }
+
+  return
+
+***************************************************************************
+section record processing: ************************************************
+***************************************************************************
+proc.one:
+* setup certificate constants.  keep here with certificate processing in
+* the event these become more dynamic values.
+    exempt.num.type         =  "TIN"
+
+* get customer data.
+    cn  =   field(record.id,'~',1)
+    buffer ("cn: ":cn)
+    rec.region = field(record.id,'~',2)[1,2]
+    rec.number = trim (field(record.id,'~',2)[3,99])
+    
+    cus.rec = fetch (cusfile,cn)
+    ifnull cus.rec {
+        buffer ("Customer record null.")
+    }
+    return.ifnull cus.rec
+    
+    home.br                 =  cus.rec<53>
+    buffer ("Home Branch:  ":home.br)
+    if (sv.hbr = home.br) & (sv.comp.code) {
+        comp.code = sv.comp.code
+    }{
+        locate home.br in br.comp.xref<1> setting pos }{
+            br.comp.xref = insert (br.comp.xref, 1, pos;home.br)
+            sub::ud.ava.get.company.id (home.br, comp.code)
+            br.comp.xref = insert (br.comp.xref, 2, pos;comp.code)
+        }
+        comp.code = br.comp.xref<2, pos>
+    }
+    sv.hbr                  =  home.br
+    sv.comp.code            =  comp.code
+    if not (comp.code) {
+        comp.code               =  "851125"
+    }
+    cert.type               =  "BLANKET"
+    inv.po.num              =  ""
+
+* pricing type to business type mapping.
+* first pricing type only.
+    prc.type                =  cus.rec<35, 1>
+    if not (prc.type) {
+
+* class for fallback.
+        prc.type             =  cus.rec<13>
+    }
+    bus.type                =  ""
+    bus.type.desc           =  ""
+    locate prc.type in xref.types<1> setting tpos {
+        bus.type             =  xref.types<2, tpos>
+    }{
+        bus.type             =  "20"
+    }
+
+    if bus.type = "20" {
+        if prc.type {
+            bus.type.desc     =  prc.type
+        }{
+            bus.type.desc     =  "Unknown"
+        }
+    }
+
+* convert double quotes to apostrophe to avoid data errors.
+    cus.name                =  convert (char (34) , char (39) , trim (cus.rec<1>))
+    cus.addr1               =  convert (char (34) , char (39) , trim (cus.rec<2, 1>))
+    cus.addr2               =  convert (char (34) , char (39) , trim (cus.rec<2, 2>))
+    cus.addr3               =  convert (char (34) , char (39) , trim (cus.rec<2, 3>))
+    cus.city                =  trim (cus.rec<3>)
+    cus.region              =  trim (cus.rec<4>)
+    cus.postal              =  trim (cus.rec<5>)
+
+* bad data in country attribute of customer record.  look up country
+* in zip file.  if blank, assume us.
+*cus.country             =  cus.rec<6>
+*if not(cus.country) then cus.country = "us"
+    if cus.postal = "." {
+        return
+    }
+    postal.len  = len (cus.postal)
+
+    cases {
+
+        case postal.len = 7
+            postal.lkup = cus.postal [1, 7]
+
+        case postal.len = 6 and cus.postal [6, 1] = "."
+            postal.lkup = cus.postal [1, 6]
+
+        case otherwise
+            postal.lkup = cus.postal [1, 5]
+
+    }
+
+    readv cus.country from zipfile, postal.lkup, 5 }{
+        cus.country = "US"
+    }
+
+    if not (cus.country) {
+        cus.country = "US"
+    }
+
+* do not skip non-us customers.  they can have us exemptions!!!
+* if cus.country ne 'us' then goto skipit
+
+    c.cert.regs =   cus.rec<33>
+    c.cert.nums =   cus.rec<34>
+    c.cert.rsns =   cus.rec<105>
+    cert.no~
+    
+    cur.reg = each.vm (c.cert.regs, cur.reg.ptr) {
+        if (rec.region = cur.reg) {
+            if c.cert.nums<1,cur.reg.ptr> = rec.number {
+                cert.no = cur.reg.ptr
+                exit
+            }
+        }
+    }
+    ifnot cert.no {
+        buffer (" No cert number.")
+    }
+    return.ifnot cert.no
+    
+*cert effective date
+    cefd~~~
+    cert.eff.date~~~
+
+*ecms and avalara cert ids.  unique for each cert.
+    ava.cert.id~~~
+    ava.cust.id~~~
+
+*cert state.  must be valid or we don't send it.
+    cert.region          =  rec.region
+    cert.number          =  rec.number
+    exempt.reason        =  cus.rec<105, cert.no> [1, 1]
+
+* ids assigned to record before calling subroutine.
+    recid_certid~~~
+    if index (record.id, '~', 2) {
+        recid_certid = field (record.id,'~',3)
+        avaid_id = field (record.id, '~',1):"~":field (record.id,'~',2)
+    }{
+        avaid_id = record.id
+    }
+    ava.cert.id          =  ecms.data<1>
+    if ava.cert.id # recid_certid {
+        buffer ("ID Mismatch!  Record.ID: ":recid_certid:"  Ava.Cert.ID: ":ava.cert.id)
+        record.id~
+        return to finish
+    }
+    
+
+* assume certs are us certs.  customer can be foreign with us exemption.
+*ecms.data<3>         =  cus.country
+    ecms.data<3>         =  "US"
+
+    ecms.data<4>         =  cert.region
+
+    ecms.data<5>         =  cert.number
+    ecms.data<6>         =  exempt.num.type
+
+* read cert effective date from avalara_ID.
+    cefd = fetch (avaidfile, avaid_id, 2)
+    ifnull cefd {
+        sub::realdate (cefd, defaulteffect)
+        unfetch (cefd, avaidfile, avaid_id, 2)
+    }
+    * For portal comparison we need a YYYY-MM-DD format.
+    *ecms.data<7>         =  oconv (cefd, "D4/")
+    ecms.data<7>         =  oconv (cefd, "D-YMD[4,2,2]")
+
+*       process cert expiration date.  set for export if blank.
+    *cexd                 =  cus.rec<172, cert.no>
+    * Expiring all certificates
+    exp.date   =  20821
+    exp.date  +=  0
+    sv.cexd              =  cexd
+    if index (cexd, '/',1) {
+        cexd    =   iconv (cexd,'D4/')
+    }
+    ifnot (cexd) {
+        cexd = fetch (avaidfile, avaid_id)
+        ifnot (cexd) {
+            sub::realdate (newexpire, defaultexpire)
+            if (newexpire - date()) < 30 {
+                * If within 30 days, extend date by 1 year.
+                nextexpire = field(defaultexpire,'/',1):'/':field(defaultexpire,'/',2):'/+1'
+                sub::realdate (newexpire, nextexpire)
+            }
+            cexd = newexpire
+        }
+    }
+    ifnot (sv.cexd) {
+        unfetch (cexd, cusfile, cn, 172, cert.no)
+    }
+    * Verify recorded expiration date for portal.  Expiration required.  Recorded to keep one on record. 
+    udava_cexd = fetch (avaidfile, avaid_id)
+    if (!udava_cexd) | (udava_cexd NE cexd) {
+        unfetch (cexd, avaidfile, avaid_id, 3)
+    }
+    
+    * For portal comparison we need a YYYY-MM-DD format.
+    *ecms.data<8>         =  oconv (cexd, "D4/")
+    ecms.data<8>         =  oconv (cexd, "D-YMD[4,2,2]")
+
+* not skipping this record.
+
+    cert.status          =  "Active"
+    ecms.data<9>         =  comp.code
+    ecms.data<10>        =  cn
+    ecms.data<11>        =  cert.type
+    ecms.data<12>        =  inv.po.num
+    ecms.data<13>        =  bus.type
+    ecms.data<14>        =  bus.type.desc
+    ecms.data<15>        =  exempt.reason
+    if exempt.reason = "L" {
+        exempt.reason.desc = cus.rec<105, cert.no> [3, 10]
+    }{
+        exempt.reason.desc = ""
+    }
+    ecms.data<16>        =  exempt.reason.desc
+    ecms.data<17>        =  cus.name
+    ecms.data<18>        =  cus.addr1
+    ecms.data<19>        =  cus.addr2
+    ecms.data<20>        =  cus.addr3
+    ecms.data<21>        =  cus.city
+    ecms.data<22>        =  cus.region
+    ecms.data<23>        =  cus.postal
+    ecms.data<24>        =  cus.country
+    ecms.data<25>        =  cert.status
+
+    ecms.data<26>        =  "Accepted"
+    
+    tmp.buffer.txt~~~
+    edata.ctr   =   each.am(ecms.data){
+        tmp.buffer.txt = add.vm (edata.ctr:":  ":ecms.data<edata.ctr>)
+    }
+    ifnotnull tmp.buffer.txt {
+        buffer (tmp.buffer.txt)
+    }
+    
+    return
+
+***************************************************************************
+
+* checksum: 28851
+* last change: 12/23/2025 06:48:49pm
+* last compile: 10/11/2022 10:39:39am

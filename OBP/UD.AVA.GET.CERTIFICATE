@@ -1,0 +1,172 @@
+    subroutine ud.avatax.get.certificate (company.Id,cert.id,includes,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  GetCertificate                                                                       *
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* cert.id            The cert.id to lookup.  no cert id returns all ids  *
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** Retrieve a single certificate
+*** </summary>
+*** <remarks>
+*** Get the current certificate identified by this URL.
+***  
+*** A certificate is a document stored in either AvaTax Exemptions or CertCapture. The certificate document
+*** can contain information about a customer's eligibility for exemption from sales or use taxes based on
+*** criteria you specify when you store the certificate. To view or manage your certificates directly, please
+*** log onto the administrative website for the product you purchased.
+***  
+*** You can use the `$include` parameter to fetch the following additional objects for expansion:
+***  
+*** * customers - Retrieves the list of customers linked to the certificate.
+*** * po_numbers - Retrieves all PO numbers tied to the certificate.
+*** * attributes - Retrieves all attributes applied to the certificate.
+***  
+*** Before you can use any exemption certificates endpoints, you must set up your company for exemption certificate data storage.
+*** Companies that do not have this storage system set up will see `CertCaptureNotConfiguredError` when they call exemption 
+*** certificate related APIs. To check if this is set up for a company, call `GetCertificateSetup`. To request setup of exemption 
+*** certificate storage for this company, call `RequestCertificateSetup`.
+*** 
+*** ### Security Policies
+*** 
+*** * This API requires one of the following user roles: AccountAdmin, AccountOperator, AccountUser, CompanyAdmin, CompanyUser, CSPTester, SSTAdmin, TechnicalSupportAdmin, TechnicalSupportUser.
+*** * This API depends on the following active services:*Required* (all): AvaTaxPro.
+*** </remarks>
+*** <param name="companyId">The ID number of the company that recorded this certificate</param>
+*** <param name="id">The unique ID number of this certificate</param>
+*** <param name="include">OPTIONAL: A comma separated list of special fetch options. You can specify one or more of the following:
+***  
+***  * customers - Retrieves the list of customers linked to the certificate.
+***  * po_numbers - Retrieves all PO numbers tied to the certificate.
+***  * attributes - Retrieves all attributes applied to the certificate.</param>
+*        public CertificateModel GetCertificate(Int32 companyId, Int32 id, String include)
+*        {
+*            var path = new AvaTaxPath("/api/v2/companies/{companyId}/certificates/{id}");
+*            path.ApplyField("companyId", companyId);
+*            path.ApplyField("id", id);
+*            path.AddQuery("$include", include);
+*            return RestCall<CertificateModel>("GET", path, null);
+*        }
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+    
+
+    if cert.id & num(cert.id) {
+        change (cert.one, "$cert.id$", cert.id)
+        buffer ("Cert ID ":cert.id:" used.")
+    }{
+        buffer ("Invalid cert id.")
+        finish
+    }
+
+    change (method, "$company.id$", company.id)
+    method          =   method:cert.one
+    buffer ("Method URL used is:  ":method)
+    
+    set.params
+    buffer (params)
+    sub::ava.do.request (http.type,method,'',,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+    }
+    buffer (lower(resp))
+
+finish:    
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.GET.CERTIFICATE'
+    skip.reason~~~
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        lic.or          = :: ("License", 0, 1)
+        ctrl.id         = :: ("AvaTaxOptions")
+        method          = :: ("CertsGetBase")
+        cert.one        = :: ("CertsGetOne")
+        valid.includes  = :: ("CertsGetInclude")
+    }
+    assign (method.mod)
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    read settings from ctrlfile, ctrl.id }{
+        return
+    }
+    
+*  Variables
+    assign (cert.id)
+    
+    http.type       =   'GET'
+
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+**************************************************************************
+set.params:
+    params~~~
+    *** Validate passed in includes, add to params as comma delim list if valid.
+    if includes {
+        one.include = each.comma (includes, inc.loop) {
+            if index(valid.includes,one.include,1) {
+                final.includes = add.comma (one.include)
+            }
+        }
+        if final.includes {
+            param.pair = "$include":vm:final.includes
+            params<-1> = param.pair
+        }
+    }
+
+ return
+
+* checksum: 8303
+* last change: 10/11/2022 10:39:45am
+* last compile: 10/11/2022 10:39:45am

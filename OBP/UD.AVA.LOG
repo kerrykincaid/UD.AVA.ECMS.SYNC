@@ -1,0 +1,55 @@
+          subroutine ud.ava.log (passer)
+ 
+***       Subroutine:  UD.AVA.LOG
+***
+**************************************************************************
+***  Program to select a record, and view the change log for it in
+***  MAINT.LOG
+**************************************************************************
+***
+
+    rec.list~~~
+    recs~~~
+    if unassigned (passer) {
+        return
+    }
+    if index (passer,'~',1) {
+        rec.id = passer
+        display.log
+    }{
+        cn    =   passer
+        get.all.recs
+    }
+finish:        
+ exit.sub
+***************************************************************************
+display.log:
+    sub::maint.log.view 'AVALARA_DATA':am:rec.id:am:rec.id
+    
+  return
+***************************************************************************
+get.all.recs:  *** get all the tax cert recs for this customer.          
+
+    cmd   =   'SELECT AVALARA_DATA WITH CN = "':CN:'"'
+    msg   =   exec (rec.list,cmd)
+
+    loop
+        readnext rec.id from rec.list }{
+            exit
+        }
+     
+        locate rec.id in recs by "AL" setting pos }{
+            recs    =   insert(recs, pos; rec.id)
+            if pos > 8 {
+                finish
+            }
+        }
+        display.log
+    }
+
+    return
+***************************************************************************          
+
+* checksum: 25847
+* last change: 10/11/2022 10:39:50am
+* last compile: 10/11/2022 10:39:50am

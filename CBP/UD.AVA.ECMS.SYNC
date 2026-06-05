@@ -1,0 +1,1795 @@
+    SUBROUTINE UD.AVA.ECMS.SYNC  (ERR.MSG)
+** Version# 0.0001[110] - 12/29/25 - 05:20pm  - KK05718 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.ECMS.SYNC at 05:20pm 12/29/2025 by KK057*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.ECMS.SYNC          *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 1198
+* last change: 12/23/2025 06:53:15pm
+* last compile: 10/11/2022 10:39:41am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+* subroutine - ud.ava.ecms.sync
+
+*---------------------------program description---------------------------*
+*  Processes the Data records from the ECMS Build routine, using API
+* to transmit the data. 
+* One way sync from Eclipse to Avalara Portal.  
+* *** OLD Notes on ECMS.
+*  https://help.avalara.com/001_avalara_avatax/000_avatax_update/manage__
+* exempt_customers_using_avatax_exemptions
+*
+*** Ultimately this is a temporary routine.  Next step is to replace the export portions of
+*** the AVA.ECMS.BUILD routine with API calls.  Following would be to use the API calls 
+*** instead of building AVALARA_DATA records, or at the same time.  
+*--------------------------parameter definition---------------------------*
+* err.msg -                                                         [out]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+
+    IF NOT (PHANTOM.PROC) THEN 
+        WINDOW "", "", 78, 21, 3, "", "ECMS to API Sync"
+    END 
+
+    GOSUB INITIALIZE
+
+    PHST.MSG = "Processing CUSTOMER records..."
+    IF NOT( (LAST.DATE = DATE()) ) THEN 
+        LAST.DATE = DATE()
+        LAST.TIME = 1
+    END 
+    TODAYOFWEEK = OCONV(DATE(), "DWB")
+    LOCATE TODAYOFWEEK IN CHANGE(FULLSYNCDAYS, ',', @AM) SETTING TODAYOFWEEK.PTR ELSE TODAYOFWEEK.PTR = @FALSE
+    IF TODAYOFWEEK.PTR THEN 
+        IF LAST.TIME < FULLSYNCTIME THEN 
+            * Perform a full sync.
+            FULL.SYNC = @TRUE
+        END ELSE 
+            * After set time of day, perform a sync on customers edited today, since the last run.
+            FULL.SYNC = @FALSE
+        END 
+    END ELSE 
+        FULL.SYNC = @FALSE
+        * NOT a Full Sync Day.  Is it a Partial Sync Day...
+        LOCATE TODAYOFWEEK IN CHANGE(PARTSYNCDAYS, ',', @AM) SETTING TODAYOFWEEK.PTR ELSE TODAYOFWEEK.PTR = @FALSE
+        IF TODAYOFWEEK.PTR THEN 
+            IF LAST.TIME < FULLSYNCTIME THEN 
+                * Perform a PartialSync
+                PARTIAL.SYNC = @TRUE
+            END ELSE 
+                * Do NOT perform a partial sync.
+                PARTIAL.SYNC = @FALSE
+            END 
+        END 
+    END 
+*** Come back here if there is a condition that requires a different sync type.
+FORCED.PARTIAL:        
+    IF FULL.SYNC THEN 
+        RUN.LIMIT   =   FULL.RUN.LIMIT
+        RUN.TYPE    =   "Full"
+        RUN.MSG     =   "Full sync indicated."
+        GOSUB LOG.MSG
+    END ELSE 
+        IF PARTIAL.SYNC THEN 
+            RUN.LIMIT   =   PART.RUN.LIMIT
+            RUN.TYPE    =   "Partial"
+            RUN.MSG     =   "Partial sync indicated."
+            GOSUB LOG.MSG
+        END 
+    END 
+
+    IF FULL.SYNC OR PARTIAL.SYNC THEN 
+        GOSUB FETCH.PORTAL.DATA
+    END ELSE 
+        RUN.LIMIT = @FALSE
+        RUN.TYPE    =   "Quick"
+        RUN.MSG     = "Quick Sync is indicated."
+        GOSUB LOG.MSG
+    END 
+    *  Select, process, and update customer records.
+    GOSUB PROC.CUSTS
+
+    RUN.MSG    =  "END:   " : OCONV (DATE(), 'D4/'):"  ":OCONV (TIME() , "MTHS")
+    GOSUB LOG.MSG
+    ELAPSED = ''
+    ELAPSED = (DATE() - (BEGIN.DATE)) * 24 * 60 * 60 + INT(TIME() - (BEGIN.TIME) + .5)
+    RUN.MSG    =  "Total Run Time : " : ELAPSED
+    GOSUB LOG.MSG
+    TIME_ID = PGM.NAME:'.TIME'
+    READ.LAST.ACTION TIME.REC, TIME_ID, ''
+    TIMELOG.ENTRIES = DCOUNT(TIME.REC, @AM)
+    
+    IF TIMELOG.ENTRIES <> 0 THEN 
+        * Newest to oldest by Attribute
+        OLDEST.TIMELOG.DATE     =   TIME.REC<TIMELOG.ENTRIES,2>
+        CUTOFF.TIMELOG.DATE     =   DATE() - TIMELOGDAYS
+        * Cleanup old timelog entries before adding new entry.
+        LOOP WHILE (OLDEST.TIMELOG.DATE < CUTOFF.TIMELOG.DATE) AND (TIMELOG.ENTRIES) 
+            EMPTY.TIMELOG.DATE:
+            TIME.REC    =   DELETE (TIME.REC, TIMELOG.ENTRIES)
+            TIMELOG.ENTRIES = DCOUNT(TIME.REC, @AM)
+            IF TIMELOG.ENTRIES <> 0 THEN 
+                OLDEST.TIMELOG.DATE     =   TIME.REC<TIMELOG.ENTRIES,2>
+                IF OLDEST.TIMELOG.DATE = '' THEN 
+                    *   We know we have entries due to count.  Null date could be an errant AM.
+                    * Try again.
+                    GOTO EMPTY.TIMELOG.DATE
+                END 
+            END 
+        REPEAT 
+    END 
+    
+    * Add current timelog entry to top of timelog
+    INS (UPCASE(RUN.TYPE):VM:BEGIN.DATE:VM:BEGIN.TIME:VM:ELAPSED) BEFORE TIME.REC<(1)>
+    WRITE.LAST.ACTION TIME.REC, TIME_ID
+
+***************************************************************************
+* SECTION CLEANUP:    *******************************************************
+***************************************************************************
+FINISH:
+
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    PGM.NAME = PGM.NAME:".":UPCASE(RUN.TYPE)
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    IF PHANTOM.PROC THEN 
+        PHST.MSG = "Build complete."
+        CALL.TEMP.2 = USER.ID ; SEND.MESSAGE "Phantom", CALL.TEMP.2, PHST.MSG ; USER.ID = CALL.TEMP.2
+        GOSUB LOG.MSG
+    END ELSE 
+        WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+        PRINT "Press <Return> to continue."
+IN$$1:    INP A
+        WINDOW.CLOSE 
+    END 
+    * Remove currently running flag from control file.
+    IF RUN.PID THEN 
+        * If run.pid is my PID, then set run.pid false for next ifnot.
+        RUN.PID = (RUN.PID # MYPID)
+    END 
+    IF NOT( RUN.PID ) THEN 
+        WRITEV ("") ON CTRLFILE, (RUNCTRLREC), (1)
+    END 
+    
+    *sub::ut.tempfile.delete (temp.name, tempfile)
+    CALL.TEMP.OBJECT.HANDLE = TEMPFILEOBJ ; UD.MTH.TEMP.FILE.DELETE.FILE CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE ; TEMPFILEOBJ = CALL.TEMP.OBJECT.HANDLE
+    RUN.MSG = "Tempfile deleted."
+    GOSUB LOG.MSG
+    
+    *Clean up old Logs. All programs using UD.AVALOG.
+    CUTOFF.LOG.DATE =   BEGIN.DATE - RUNLOGDAYS
+    SELECT AVALOGFILE
+    LOOP WHILE READNEXT LOG.ID DO 
+        OLD.LOG.DATE    =   FIELD (LOG.ID, '~',2)
+        IF OLD.LOG.DATE <   CUTOFF.LOG.DATE THEN 
+            RUN.MSG = "Old log ":LOG.ID:" deleted."
+            GOSUB LOG.MSG
+            DELETE AVALOGFILE, LOG.ID
+        END 
+    REPEAT 
+    
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+***************************************************************************
+* SECTION LOGGING: **********************************************************
+***************************************************************************
+LOG.MSG: * LOG MESSAGE TO ALL LOCATIONS.
+
+    IF PHST.MSG THEN 
+        ADD.OUTPUT.TEXT = (PHST.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        IF PHANTOM.PROC THEN 
+            WRITE PHST.MSG ON PHSTFILE, PID$
+        END ELSE 
+            PRINT PHST.MSG "L#70"
+        END 
+        
+    END 
+    IF RUN.MSG THEN 
+        ADD.OUTPUT.TEXT = (RUN.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        IF NOT (PHANTOM.PROC) THEN 
+            PRINT RUN.MSG "L#70"
+        END 
+    END 
+    PHST.MSG = ''
+    RUN.MSG = ''
+
+    RETURN
+***************************************************************************
+* SECTION STARTUP ROUTINES: *************************************************
+***************************************************************************
+INITIALIZE:
+    PHST.MSG = ''
+    RUN.MSG = ''
+    LAST.RUN.REC = ''
+    RUN.PID = @FALSE
+    RUN.TYPE = ''
+    CONVERSION = ''
+    
+    PGM.NAME    =   "UD.AVA.ECMS.SYNC"
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (OCONV(BEGIN.TIME,"MTHS")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+* objects
+    
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.ECMS.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TIMELOGDAYS, "TimeLogDays", 14 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, RUNLOGDAYS, "RunLogDays", 14 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULL.RUN.LIMIT, "FullSyncRunLimit" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PART.RUN.LIMIT, "PartSyncRunLimit" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, SV.GL.BR, "DefaultBranch", "1000" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, NEW.BATCH.SIZE, "NewCustBatchSize", 10 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, QS.BATCHSIZE, "QSNewCustBatchSize", 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TROUBLESHOOTING, "TroubleShooting", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULLSYNCTIME, "FullSyncPickTime" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, FULLSYNCDAYS, "FullSyncDayofWeek" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PARTSYNCDAYS, "PartSyncDayofWeek" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, PARTSYNCWINDOW, "PartialWindow", 0 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, RUNCTRLREC, "RunCtrlRec" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CUSTMAX, "MaxCustSelected", 100 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, VAR.EXP.DATE, "var.exp.date", "+1/FE/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVADATEFORMAT, "AvalaraDateFormat", "D-YMD[Z4,2,2]" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        * Record field tracking to determine if changes are to customer data, or certificate data.    
+        REC.FIELDS = ''
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CustomerFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<1> = TEMP.VAR.1
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CertificateFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<2> = TEMP.VAR.1
+        REC.FIELDS<1> = CHANGE(REC.FIELDS<1>, ',', @VM)
+        REC.FIELDS<2> = CHANGE(REC.FIELDS<2>, ',', @VM)
+*   END.WITH
+    
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+        
+    * Get my process id for tracking.
+    UNIX.PID.GET MYPID
+    
+    * Run one at a time.  Do not let another Sync begin while one is running.
+    READV RUN.PID FROM CTRLFILE, (RUNCTRLREC), (1) ELSE RUN.PID = ''
+    
+    IF RUN.PID THEN 
+        * Check that the Process is still active.  This could result in a false positive.
+        * Better safe than sorry... If we track our own PID, it'll get cleaned up on exit.
+        UT.PIDS.GET RUNNING.PIDS
+        LOCATE RUN.PID IN RUNNING.PIDS SETTING IS.RUNNING ELSE IS.RUNNING = @FALSE
+        IF IS.RUNNING AND (RUN.PID # MYPID) THEN 
+            PHST.MSG = "Sync already running!  ":RUN.PID
+            CALL.TEMP.2 = USER.ID ; SEND.MESSAGE 'Phantom', CALL.TEMP.2, PHST.MSG ; USER.ID = CALL.TEMP.2
+            GOSUB LOG.MSG
+            SLEEP 12
+            *  Exit immediately without writing last action record.  Keep previous entry.
+            GOSUB EXIT.TO.CALLING.PROGRAM
+        END 
+        * Not actually running... clean up the Ctrl Rec.
+        WRITEV ("") ON CTRLFILE, (RUNCTRLREC), (1)
+    END 
+    *  This process is running... write control record with PID.
+    WRITEV (MYPID) ON CTRLFILE, (RUNCTRLREC), (1)
+    
+    IF NOT( ENABLED ) THEN 
+        RUN.MSG = "Interface not enabled!" 
+        GOSUB LOG.MSG
+        GOSUB FINISH
+    END 
+
+* last run
+    * read last date and time of last sync.
+    READ.LAST.ACTION LAST.DATE, PGM.NAME, @FALSE, 1
+    READ.LAST.ACTION LAST.TIME, PGM.NAME, 0, 2
+    
+    IF LAST.DATE AND LAST.TIME THEN 
+        LAST.DATE = ICONV (LAST.DATE, "D4/")
+        LAST.TIME = ICONV (LAST.TIME, "MTHS")
+    END 
+    
+* variables    
+    READ VALID.US.STATES FROM CTRLFILE, ('VALID.US.STATES') ELSE VALID.US.STATES = ''
+    FULL.SYNC = @FALSE
+    PARTIAL.SYNC = @FALSE
+    
+    RESP = ''
+    CUSTOMERLIST = ''
+    PORTALCUSTOMERLIST = ''
+    PROC_DELLIST = ''
+    CN = ''
+    CN.CNT = @FALSE
+    SELECT.CNT = @FALSE
+    OVERMAX = @FALSE
+    DEL.CNT = @FALSE
+    DEL.CERT.CNT = @FALSE
+    PORTAL.CUST.LST = ''
+    PORTAL.CUID.LST = ''
+    PORTAL.CERT.LST = ''
+    CUS.POS = @FALSE
+    PCN = ''
+    PCN.ID = ''
+    PROCD.CNS = ''
+    PREV.CN = ''
+    EXPIRED.CNT = @FALSE
+    REC.CT = @FALSE
+    RECORD.IDS = ''
+    RECORDS = ''
+    PCN.CERT.LST = ''
+* Keep a list of customers that need to be deleted.  Remove customers from delete list
+* if a new certificate is encountered later in the process.
+    DEL.CUS.LST = ''
+    
+* New customer and cert JSON.
+    SINGLEBATCH = @FALSE
+    COMP.LIST = ''
+    NEWCUST.CT = @FALSE
+    NEWCUS.J.COMP = ''
+    NEWCUS.BATCH = ''
+    NEWCUS.J.H  =  " ["
+    JSON.OUT = ''
+
+* variables for api calls and caching.
+    GL.BR = ''
+    COMPID = @FALSE
+
+    RUN.MSG = "Initialized  ":MYPID
+    GOSUB LOG.MSG
+    RUN.MSG = ""
+    GOSUB LOG.MSG
+    IF TROUBLESHOOTING THEN 
+        RUN.MSG = "Troubleshooting!"
+        GOSUB LOG.MSG
+    END  
+    
+* files
+    GOSUB PREP.FILES
+
+    LAST.RUN.REC<1> = OCONV (DATE(), 'D4/')
+    LAST.RUN.REC<2> = OCONV (TIME(), 'MTHS')
+    WRITE (LAST.RUN.REC) ON AVAIDFILE, ('LAST.RUN')
+    
+  RETURN
+***************************************************************************
+PREP.FILES:
+    RUN.MSG = "Prep files"
+    GOSUB LOG.MSG
+    
+* tempfile
+    TEMP.HANDLE = "" ; TEMP.HANDLE<3> = "FILE;FILE,SEQ.FILE;SEQ.FILE,FILE::UNDO;UNDO,SEQ.FILE::FILE;FILE,SEQ.FILE::FILE::UNDO;UNDO" ; UD.MTH.TEMP.FILE.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID, TEMP.CHILD.CHILD.TEMPFILEOBJ.FILE, TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE, TEMP.CHILD.CHILD.TEMPFILEOBJ.FILE.UNDO, TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE.FILE, TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE.FILE.UNDO ; TEMPFILEOBJ = TEMP.HANDLE ; CHILD.TEMPFILEOBJ.FILE = TEMP.CHILD.CHILD.TEMPFILEOBJ.FILE ; CHILD.TEMPFILEOBJ.SEQ.FILE = TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE ; CHILD.TEMPFILEOBJ.FILE.UNDO = TEMP.CHILD.CHILD.TEMPFILEOBJ.FILE.UNDO ; CHILD.TEMPFILEOBJ.SEQ.FILE.FILE = TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE.FILE ; CHILD.TEMPFILEOBJ.SEQ.FILE.FILE.UNDO = TEMP.CHILD.CHILD.TEMPFILEOBJ.SEQ.FILE.FILE.UNDO ; * new TEMP.FILE object
+    CALL.TEMP.OBJECT.HANDLE = TEMPFILEOBJ ; UD.MTH.TEMP.FILE.CREATE CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.NAME, TEMPFILE ; TEMPFILEOBJ = CALL.TEMP.OBJECT.HANDLE
+
+    
+    LPATH =  FILEINFO (TEMPFILE, 2)
+    RUN.MSG = "Temporary file path:  ":LPATH
+    GOSUB LOG.MSG
+    RUN.MSG = " - Tempfile name:  ":TEMP.NAME
+    GOSUB LOG.MSG
+    
+
+* files
+*   WITH MANAGER::OPEN
+        
+        RUN.MSG = "Open data file"
+        GOSUB LOG.MSG
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVAIDFILE, "", "UD.AVALARA" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            RUN.MSG = "Error opening UD.AVALARA.  ":VM:ERR.MSG
+            GOSUB LOG.MSG
+            GOTO FINISH
+        END 
+        
+        RUN.MSG = "Open log file"
+        GOSUB LOG.MSG
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            RUN.MSG = "Error opening UD.AVALOG.  ":VM:ERR.MSG
+            GOSUB LOG.MSG
+            GOTO FINISH
+        END 
+
+        IF TROUBLESHOOTING THEN 
+            
+            CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CDFILE, "", "CONV.DATA" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+            IF (ERROR.MESSAGE <> '') THEN 
+                RUN.MSG = "Unable to open CONV.DATA for troubleshooting."
+                RUN.MSG := VM:"  Disabling troubleshooting."
+                GOSUB LOG.MSG
+                TROUBLESHOOTING = @FALSE
+            END 
+        END 
+*   END.WITH
+    
+    RUN.MSG = "Files opened"
+    GOSUB LOG.MSG
+
+  RETURN
+***************************************************************************
+* SECTION EXPORT PROCESSING: ************************************************
+***************************************************************************
+PROC.CUSTS:
+* loop through customers with exemption lines.
+ 
+    UD.AVA.CUST.SELECT CUSTOMERLIST, RUN.TYPE
+    READ.LAST.ACTION SELECT.MSG, 'UD.AVA.CUST.SELECT', @FALSE
+    IF SELECT.MSG THEN 
+        SELECT.MSG.CNT = DCOUNT(SELECT.MSG, @AM)
+        RUN.MSG         =   SELECT.MSG<SELECT.MSG.CNT>
+        GOSUB LOG.MSG
+    END 
+        
+* if a full sync, portal data has been loaded.  If not, pull portal data for JUST the selected customers.
+    IF NOT( FULL.SYNC ) AND NOT( PARTIAL.SYNC ) THEN 
+        IF SELECT.MSG THEN 
+            SELECT.MSG.CNT = DCOUNT(SELECT.MSG, @AM)
+            SELECT.CNT      =   FIELD(SELECT.MSG<SELECT.MSG.CNT>," ",1)
+            SELECT.CNT     +=   0
+            IF NUM( SELECT.CNT ) THEN 
+                OVERMAX     =   SELECT.CNT >    CUSTMAX
+            END 
+        END 
+        ** Too many customers selected results in a slower process.  Switch to partial sync.
+        IF OVERMAX THEN 
+            RUN.MSG         =   "Over maximum number of customers for a Quick Sync.  ":CUSTMAX
+            GOSUB LOG.MSG
+            RUN.MSG         =   "Forcing a Partial Sync!!"
+            GOSUB LOG.MSG
+            PARTIAL.SYNC = @TRUE
+            GOTO FORCED.PARTIAL
+        END 
+        ** Reasonable Quick Sync selection of customers... continue.
+        NEW.BATCH.SIZE  =   QS.BATCHSIZE
+        RUN.MSG = ' New Batch Size set to ':NEW.BATCH.SIZE:' for Quick Sync.'
+        GOSUB LOG.MSG
+
+        PORTALCUSTOMERLIST = CUSTOMERLIST
+        LOOP WHILE READNEXT CN FROM PORTALCUSTOMERLIST DO 
+            READ CUS.REC FROM CUSFILE, CN ELSE 
+                CONTINUE
+            END 
+            GOSUB GET.API.COMPID
+            UD.AVA.GET.CUSTOMER COMPID, CN, 'certificates', RESP
+            UD.AVA.PARSE.CUSTOBJ RESP, RECORD.IDS, RECORDS
+            RECORD.IDS.AM.COUNT = DCOUNT((RECORD.IDS), @AM) ; FOR RECORD.PTR = 1 TO (RECORD.IDS.AM.COUNT) ; RECORD.ID = (RECORD.IDS)<(RECORD.PTR)> 
+                RECORD.DATA = RAISE (RECORDS<RECORD.PTR>)
+                IF RECORD.ID <> '' THEN 
+                    WRITE RECORD.DATA ON TEMPFILE, RECORD.ID THEN 
+                    END ELSE 
+                        RUN.MSG = "  Temporary data write failure.  Exiting!!"
+                        GOSUB LOG.MSG
+                    END 
+                END 
+            NEXT RECORD.PTR 
+        REPEAT 
+        * load portal data from tempfile into tracking variables.    
+        GOSUB LOAD.PORTAL.DATA
+    END 
+   
+    IF NOT( FULL.SYNC ) THEN 
+        **  Save list of customers so we only evaluate customers for deletion that
+        **  have been processed.  Full sync will process and evaluate all customers.
+        PROC_DELLIST =   CUSTOMERLIST
+    END 
+* loop through customers selected.  process their certs.
+    LOOP WHILE READNEXT CN FROM CUSTOMERLIST DO 
+        READ CUS.REC FROM CUSFILE, CN ELSE 
+            CONTINUE
+        END 
+        CN.CNT +=  1
+        
+        C.CERT.CNT = DCOUNT(CUS.REC<33>, @VM)
+        IF C.CERT.CNT = 0 THEN CONTINUE
+        
+        GOSUB GET.API.COMPID
+        GOSUB PROC.ONE
+        
+        IF MOD (CN.CNT, 1000) = 0 THEN 
+            PHST.MSG = CN.CNT : " Customers processed."
+            GOSUB LOG.MSG
+        END 
+        WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+        GOSUB CHECK.TIME.LIMIT
+    REPEAT 
+    PHST.MSG = "Expired certificates skipped:  " : EXPIRED.CNT
+    GOSUB LOG.MSG
+    
+    IF NEWCUST.CT <> 0 THEN 
+        * All export records have been processed, there is still a batch of NEW 
+        * customers and their certificates to send to the portal.
+        RUN.MSG = "All new customers processed.  Sending final API Call."
+        GOSUB LOG.MSG
+        GOSUB NEWCUST.BYCOMP
+    END 
+    GOSUB PROC.DELETES
+    
+    RETURN
+*******************************************************************************
+PROC.ONE:
+    CN.PROCD = @FALSE
+    LOCATE CN IN PROCD.CNS SETTING PROC.POS THEN 
+        * Customer has been processed.  
+            * If a new customer, finished.
+            * A customer with updates, process certs.
+                * If we are deleting certs, we may delete this customer.
+        RUN.MSG = "Customer has been processed.  Already flagged.  ":CN
+        GOSUB LOG.MSG
+        CN.PROCD = @TRUE
+    END 
+    NEW.CUST = @FALSE
+    VALID_CUST_CERTS = ''
+    WRNG.REG = @FALSE
+    C.CERT.REGS =   CUS.REC<33>
+    C.CERT.NUMS =   CUS.REC<34>
+    C.CERT.RSNS =   CUS.REC<105>
+    CUST.PORTAL.ID = ''
+    ECMS_RECORD = ''
+    CERT.ID = ''
+    
+* Build list of valid certificates on customer record.    
+    C.CERT.REGS.VM.COUNT = DCOUNT((C.CERT.REGS), @VM) ; FOR CERT.NO = 1 TO (C.CERT.REGS.VM.COUNT) 
+        * c.cert.regs.vm.count = How many certs on the customer.
+        CERT.REGION = C.CERT.REGS<1,CERT.NO>
+        CERT.NUMBER = UPCASE (TRIM(C.CERT.NUMS<1,CERT.NO>))
+        CERT.REASON = C.CERT.RSNS<1,CERT.NO> [1,1]
+        
+        * Write back UPPERCASED exemption number.
+        IF CERT.NUMBER # C.CERT.NUMS<1,CERT.NO> THEN 
+            READVU CERT.NUMBER.TEMP.RECORD FROM CUSFILE, (CN), (34) THEN CERT.NUMBER.TEMP.RECORD<1,CERT.NO> = (CERT.NUMBER) ; WRITEV CERT.NUMBER.TEMP.RECORD ON CUSFILE, (CN), (34) ELSE CERT.NUMBER.TEMP.RECORD = '' ; CERT.NUMBER.TEMP.RECORD<1,(CERT.NO)> = (CERT.NUMBER) ; WRITEV CERT.NUMBER.TEMP.RECORD ON CUSFILE, (CN), (34)
+        END 
+        
+*test for non-US Region.
+        IF NOT(WRNG.REG) THEN LOCATE CERT.REGION IN VALID.US.STATES<1> SETTING THROWAWAY ELSE WRNG.REG = @TRUE
+        
+*test for blank 'number'.
+        CERT.BLANK           =  (LEN (TRIM (CERT.NUMBER)) = 0)
+
+*test for a type other than g or i, resale or inducstrial/mfg
+        WRNG.REAS = (CERT.REASON NE "G") AND (CERT.REASON NE "I")
+
+*test for den type.  den is allowed here.
+        WRNG.REAS = (WRNG.REAS) AND (CERT.REASON NE "DEN")
+
+*skip if blank, not g, not i, not US, not den.
+        SKIP.CERT = (CERT.BLANK OR WRNG.REAS OR WRNG.REG)
+        IF CERT.REGION = "CO" AND CERT.REASON = "DEN" THEN 
+
+*skip if den, but a city of denver exemption exists.
+            SKIP.CERT = SKIP.CERT AND (CUS.REC<175,CERT.NO,1> = "DENVER")
+        END 
+        AVAID.ID       = CN : "~" : CERT.REGION : CERT.NUMBER
+
+        *cexd                 =  cus.rec<172, cert.no>
+        * Expiring all certificates
+        EXP.DATE   =  20821
+        EXP.DATE  +=  0
+
+        IF NOT( (CEXD) ) THEN 
+            REALDATE DEFAULTEXPIRE, VAR.EXP.DATE
+            READV CEXD FROM AVAIDFILE, (AVAID.ID), (3) ELSE CEXD = (DEFAULTEXPIRE)
+            IF (CEXD) <> '' THEN 
+                IF INDEX("/", CEXD, 1) THEN 
+                    CEXD = ICONV(CEXD, "D4/")
+                END 
+                * write discovered expiration date to customer record.
+                READVU CEXD.TEMP.RECORD FROM CUSFILE, (CN), (172) THEN CEXD.TEMP.RECORD<1,CERT.NO> = (CEXD) ; WRITEV CEXD.TEMP.RECORD ON CUSFILE, (CN), (172) ELSE CEXD.TEMP.RECORD = '' ; CEXD.TEMP.RECORD<1,(CERT.NO)> = (CEXD) ; WRITEV CEXD.TEMP.RECORD ON CUSFILE, (CN), (172)
+            END 
+        END 
+        EXPIRED.CERT = CEXD <= DATE()
+
+        EXPIRED.CNT += EXPIRED.CERT
+
+        SKIP.CERT = SKIP.CERT OR (EXPIRED.CERT)
+        IF SKIP.CERT THEN CONTINUE
+        
+* build id for reading cert.id, and for comparing to export of portal data.
+        READV AVACERT_ID FROM AVAIDFILE, (AVAID.ID), (1) ELSE AVACERT_ID = ''
+        ECMS_REC_ID         = CN : "~" : CERT.REGION : CERT.NUMBER : "~" : AVACERT_ID
+        * Validate this record matches portal/customer, otherwise clear AvaCert_ID.
+        CHK.ID = ''
+        READV CHK.ID FROM TEMPFILE, (ECMS_REC_ID), (1) THEN CHK.ID = CHK.ID<1,(1)> ELSE CHK.ID = ''
+        IF CHK.ID = '' THEN 
+            * Leave avacert_id portion of ecms_rec_id blank to force matching.
+            ECMS_REC_ID     = CN : "~" : CERT.REGION : CERT.NUMBER : "~"
+            * Clear invalid cert id in record.
+            WRITEV (CHK.ID) ON AVAIDFILE, (AVAID.ID), (1)
+        END 
+        
+        LOCATE (ECMS_REC_ID) IN VALID_CUST_CERTS SETTING THROWAWAY.PTR ELSE IF VALID_CUST_CERTS = '' THEN VALID_CUST_CERTS = (ECMS_REC_ID) ELSE VALID_CUST_CERTS := @AM : (ECMS_REC_ID)
+    NEXT CERT.NO 
+
+    *locate cn in portal.cust.lst setting cus.pos {
+    LOCATE CN IN PORTAL.CUST.LST SETTING CUS.POS ELSE CUS.POS = @FALSE
+* Process list of valid certificates on customer record.      
+    VALID_CUST_CERTS.AM.COUNT = DCOUNT((VALID_CUST_CERTS), @AM) ; FOR CERT.NUMBER = 1 TO (VALID_CUST_CERTS.AM.COUNT) ; ECMS_REC_ID = (VALID_CUST_CERTS)<(CERT.NUMBER)> 
+        IF CUS.POS THEN 
+        * Validate customer is in tracking variable.
+        * 
+            RUN.MSG = "Customer ":CN:" EXISTS on Portal. "
+            GOSUB LOG.MSG
+            * Explicitly Set.
+            CUST.PORTAL = @TRUE
+            CUST.PORTAL.ID = PORTAL.CUID.LST<CUS.POS>
+            
+            * Customer is in the portal.  Verify cert id for next step.
+            AVACERT_ID = FIELD (ECMS_REC_ID,'~',3)
+            IF AVACERT_ID = '' THEN 
+                CERT.MATCH = @FALSE
+                P.CERT.ID = ''
+                RUN.MSG = " Null avacert_id.  Match to existing portal record."
+                GOSUB LOG.MSG
+                PORTAL.CERT.LST.VM.COUNT = DCOUNT((PORTAL.CERT.LST<CUS.POS>), @VM) ; FOR P.CERT.PTR = 1 TO (PORTAL.CERT.LST.VM.COUNT) ; P.CERT.ID = (PORTAL.CERT.LST<CUS.POS>)<1, (P.CERT.PTR)> 
+                    P.CERT.ID.SHORT =   FIELD (P.CERT.ID,'~',1)
+                    AVAID.ID        =   FIELD (ECMS_REC_ID,'~',1):"~":UPCASE(TRIM(FIELD(ECMS_REC_ID,'~',2)))
+                    RUN.MSG = " - ":(UPCASE (TRIM(FIELD (ECMS_REC_ID,'~',2))):" | ":UPCASE (P.CERT.ID.SHORT)) 
+                    GOSUB LOG.MSG
+                    CERT.MATCH = (UPCASE(TRIM(FIELD (ECMS_REC_ID,'~',2)))) = (UPCASE(TRIM(P.CERT.ID.SHORT))) 
+                    IF CERT.MATCH THEN 
+                        PORTAL.AVACERT.ID = FIELD (P.CERT.ID, '~', 2)
+                        RUN.MSG = "  Match!  Recording Avalara Cert ID: ":PORTAL.AVACERT.ID
+                        GOSUB LOG.MSG
+                        CERT.ID = PORTAL.AVACERT.ID
+                        ECMS_REC_ID = UPCASE (ECMS_REC_ID:PORTAL.AVACERT.ID)
+                        * Write matched portal certificate ID to UD.AVALARA record.
+                        RUN.MSG = "Saving UD.AVALARA record: ":AVAID.ID
+                        GOSUB LOG.MSG
+                        WRITEV (PORTAL.AVACERT.ID) ON AVAIDFILE, (AVAID.ID), (1)
+                        IF CUST.PORTAL.ID <> '' THEN 
+                            WRITEV (CUST.PORTAL.ID) ON AVAIDFILE, (AVAID.ID), (4)
+                        END 
+                    END ELSE 
+                        RUN.MSG = "  No portal match.  "
+                        GOSUB LOG.MSG
+                    END 
+                UNTIL CERT.MATCH
+                NEXT P.CERT.PTR 
+            END 
+        END ELSE 
+            * Customer is NOT in the portal.
+            * Explicitly Set.
+            RUN.MSG = "Customer ":CN:" does NOT exist on Portal. "
+            GOSUB LOG.MSG
+            CUST.PORTAL = @FALSE
+        END 
+        
+        READ PORTAL.REC FROM TEMPFILE, (ECMS_REC_ID) ELSE PORTAL.REC = ''
+        RUN.MSG = "  Read record ":ECMS_REC_ID
+        GOSUB LOG.MSG
+        ** Sync directly to customer.
+        IF (PORTAL.REC) = '' THEN 
+            * The exemption is NOT entered into the portal data.  
+            IF CUST.PORTAL THEN 
+                *New Cert for existing customer.
+                * Remove from delete list if customer previously marked for deletion from portal.
+                LOCATE CN IN DEL.CUS.LST SETTING PTR THEN 
+                    DEL.CUS.LST = DELETE(DEL.CUS.LST,PTR)
+                END 
+                RUN.MSG = "   New CERT for existing customer.  ":  ECMS_REC_ID
+                GOSUB LOG.MSG
+                * For a new cert, we set the Cert.ID to match on the RegionExemptnumber on the 
+                * customer record.  CERT.JSON will use this to build the JSON required for API.
+                CERT.ID = FIELD (ECMS_REC_ID,"~",2)
+                GOSUB CREATE.LINK.CERTIFICATE
+            END ELSE 
+                *  New Cert for new customer.  New customer processing adds ALL certs for a new customer.
+                * Additional new certs need not be processed once a new customer has been processed.
+                NEW.CUST = @TRUE
+                IF NOT( CN.PROCD ) THEN 
+                    *Process new customer.
+                    RUN.MSG = "   New CERT for NEW customer.  ":  ECMS_REC_ID
+                    GOSUB LOG.MSG
+                    GOSUB PROCESS.NEW.CUST
+                    CN.PROCD = @TRUE
+                    PROCD.CNS = INSERT(PROCD.CNS,PROC.POS;CN)
+                END ELSE 
+                    *Skip new customer.  Already processed.
+                    RUN.MSG = "   Skip New CERT for NEW customer already processed.  ":  ECMS_REC_ID
+                    GOSUB LOG.MSG
+                    CUST.NEW = @FALSE
+                END 
+            END 
+            **}
+        END ELSE 
+            *Existing cert for existing customer.
+            * Already matched to portal rec with ecms_rec_id.  Assume same portal IDs.
+            RUN.MSG = "   Existing CERT for existing CUSTOMER.  ":  ECMS_REC_ID
+            GOSUB LOG.MSG
+            ECMS_RECORD<1>  =   PORTAL.REC<1>
+            ECMS_RECORD<2>  =   PORTAL.REC<2>
+            IF ECMS_RECORD<2> = '' THEN 
+                ECMS_RECORD<2> = CUST.PORTAL.ID
+            END 
+            SV_ECMS_REC_ID  =   ECMS_REC_ID
+            UD.AVA.ECMS.BLD.REC ECMS_REC_ID, ECMS_RECORD
+            
+            IF NOT( ECMS_REC_ID ) THEN 
+                RUN.MSG = " ERROR in building update record! ":SV_ECMS_REC_ID
+                GOSUB LOG.MSG
+                GOTO SKIP.PROCESSING
+            END 
+            
+            UP.CUST = @FALSE
+            UP.CERT = @FALSE
+            
+            * Remove from delete list if customer previously marked for deletion from portal.
+            LOCATE CN IN DEL.CUS.LST SETTING PTR THEN 
+                DEL.CUS.LST = DELETE(DEL.CUS.LST,PTR)
+            END 
+            FLD_DIFFS = ''
+            FOR FLD = (1) TO (24) 
+                IF UPCASE(TRIM(PORTAL.REC<FLD>)) # UPCASE(TRIM(ECMS_RECORD<FLD>)) THEN 
+                    * Special case... Field 13.
+                    IF FLD = 13 THEN 
+                        * Only replace non-empty values for Business Type.
+                        IF TRIM(PORTAL.REC<FLD>) = '' THEN CONTINUE
+                    END 
+                    * Look at customer fields.  
+                    IF NOT(UP.CUST) THEN LOCATE.VM.IN.FIELD = RAISE(REC.FIELDS<1>) ; LOCATE FLD IN LOCATE.VM.IN.FIELD SETTING THROWAWAY THEN UP.CUST = @TRUE
+                    * Look at certificate fields
+                    IF NOT(UP.CERT) THEN LOCATE.VM.IN.FIELD = RAISE(REC.FIELDS<2>) ; LOCATE FLD IN LOCATE.VM.IN.FIELD SETTING THROWAWAY THEN UP.CERT = @TRUE
+                    IF (UP.CUST) OR (UP.CERT) OR (TROUBLESHOOTING) THEN 
+                        RUN.MSG = " Field ":FLD:"."
+                        GOSUB LOG.MSG
+                        RUN.MSG = "  Portal:  ":UPCASE(PORTAL.REC<FLD>):" # Eclipse:  ":UPCASE(ECMS_RECORD<FLD>)
+                        GOSUB LOG.MSG
+                    END 
+                    IF ( NOT( UP.CUST ) ) AND ( NOT( UP.CERT ) ) THEN 
+                        IF TROUBLESHOOTING THEN 
+                            RUN.MSG = "  Field ":FLD:" not set for updating."
+                            GOSUB LOG.MSG
+                        END 
+                    END ELSE 
+                        * Keep track of differences for conditional updating... planned feature.
+                        LOCATE (FLD) IN FLD_DIFFS SETTING THROWAWAY.PTR ELSE IF FLD_DIFFS = '' THEN FLD_DIFFS = (FLD) ELSE FLD_DIFFS := @AM : (FLD)
+                    END 
+                END 
+            NEXT FLD 
+        
+            IF ( NOT( CN.PROCD ) ) AND (UP.CUST) THEN 
+                * Update customer data for existing customer.
+                RUN.MSG = "  Existing CUSTOMER update.  ":  ECMS_REC_ID
+                GOSUB LOG.MSG
+                GOSUB UPDATE.CUSTOMER
+                CN.PROCD = @TRUE
+                PROCD.CNS = INSERT(PROCD.CNS,PROC.POS;CN)
+            END ELSE 
+                IF CN.PROCD THEN 
+                    RUN.MSG = "   Existing CUSTOMER already updated.  Skipping.  ":  ECMS_REC_ID
+                    GOSUB LOG.MSG
+                END ELSE 
+                    IF TROUBLESHOOTING THEN 
+                        RUN.MSG = "   Existing CUSTOMER, No Update.  "  :  ECMS_REC_ID
+                        GOSUB LOG.MSG
+                    END 
+                END 
+            END 
+            IF UP.CERT THEN 
+                * Update certificate for an existing customer.
+                RUN.MSG = "   Existing CERT update for existing CUSTOMER.  ":  ECMS_REC_ID
+                GOSUB LOG.MSG
+                IF NOT( CERT.ID ) THEN 
+                    CERT.ID = ECMS_RECORD<1>
+                END 
+                GOSUB UPDATE.CERTIFICATE
+            END ELSE 
+                IF TROUBLESHOOTING THEN 
+                    RUN.MSG = "   Existing CERT No update.  ":  ECMS_REC_ID
+                    GOSUB LOG.MSG
+                END 
+            END 
+SKIP.PROCESSING:    
+            * Skip processing.  Remove from tracking variables to prevent deletion.
+            * Portal Customer Number.
+            PCN = FIELD (ECMS_REC_ID,'~',1)
+            * Portal Exemption Number (with Region)
+            PEN = FIELD (ECMS_REC_ID,'~',2):"~":FIELD (ECMS_REC_ID,'~',3)
+            
+            *  Once processed, remove certificate from portal certificate list.
+            LOCATE UPCASE(PCN) IN UPCASE(PORTAL.CUST.LST) SETTING CUST.POS ELSE CUST.POS = 0
+            LOCATE UPCASE(CUST.POS) IN UPCASE((PORTAL.CERT.LST)<(PEN)>) SETTING CERT.POS ELSE CERT.POS = 0
+            
+            IF CERT.POS <> 0 THEN 
+                PORTAL.CERT.LST = DELETE(PORTAL.CERT.LST,CUST.POS,CERT.POS)
+            END 
+            *  If all certificates have been removed from portal customer, remove the customer
+            * from the portal customer list.
+            CUST.CERT.CT = DCOUNT(PORTAL.CERT.LST<CUST.POS>, @VM)
+                            
+            IF CUST.CERT.CT = 0 THEN 
+                * Delete the same entire attribute from the three parallel arrays.
+                PORTAL.CUST.LST = DELETE (PORTAL.CUST.LST,CUST.POS)
+                PORTAL.CUID.LST = DELETE (PORTAL.CUID.LST,CUST.POS)
+                PORTAL.CERT.LST = DELETE (PORTAL.CERT.LST,CUST.POS)
+            END 
+            
+            * Any customer / cert left in the list wasn't found in the customer / cert list in Eclipse.
+            * Delete the remainder of the list when finished.
+        END 
+    NEXT CERT.NUMBER 
+    
+RETURN   
+***************************************************************************
+PROCESS.NEW.CUST:
+    RUN.MSG = "   Process new customer ":CN
+    GOSUB LOG.MSG
+
+    * Get customer JSON.  new.cust flag will determine if new customer or update customer
+    * json is returned.
+    UD.AVA.CUST.JSON CUST.JSON, CN, NEW.CUST
+
+    IF NEW.CUST AND CUST.JSON THEN 
+        * New customer... if it happens to be in the delete list, remove it.
+        LOCATE (CN) IN (DEL.CUS.LST) SETTING DEL.LST.PTR ELSE DEL.LST.PTR = 0
+        IF DEL.LST.PTR <> 0 THEN 
+            DEL.CUS.LST = DELETE(DEL.CUS.LST, DEL.LST.PTR)
+        END 
+        NEWCUST.CT += 1
+        LOCATE COMPID IN COMP.LIST SETTING NEWREC.POS ELSE 
+            COMP.LIST = INSERT(COMP.LIST,NEWREC.POS;COMPID)
+            RUN.MSG = "   Insert company id, ":COMPID:", into company list."
+            GOSUB LOG.MSG
+        END 
+        RUN.MSG = "   Company ID, ":COMPID:", found in position ":NEWREC.POS:"."
+        GOSUB LOG.MSG
+        * AM Record, to VM record, to SVM Record.  Save for Single Batch backup processing.
+        NEWCUS.BATCH<NEWREC.POS,-1> = LOWER(LOWER(CUST.JSON))
+        
+        NEWCUS.J = RAISE(NEWCUS.J.COMP<NEWREC.POS>)
+        IF NEWCUS.J THEN 
+            RUN.MSG = "   Existing New Customer Batch JSON.  Appending."
+            GOSUB LOG.MSG
+            
+            NEWCUS.J = NEWCUS.J:",":CUST.JSON
+        END ELSE 
+            RUN.MSG = "   New Customer Batch JSON empty.  Starting new JSON."
+            GOSUB LOG.MSG
+            
+            NEWCUS.J = CUST.JSON
+        END 
+        NEWCUS.J.COMP<NEWREC.POS> = LOWER(NEWCUS.J)
+        SV.COMPID = COMPID
+        IF NEWCUST.CT >= NEW.BATCH.SIZE THEN 
+            RUN.MSG = "   New customer batch size reached.  ":NEW.BATCH.SIZE:".  Sending API Call."
+            GOSUB LOG.MSG
+            ***** Batch size is total, not by company.  Most likely only a single company anyway.
+            GOSUB NEWCUST.BYCOMP
+        END 
+        COMPID =   SV.COMPID
+    END ELSE    
+        RUN.MSG = "   Not new, or no customer JSON."
+        GOSUB LOG.MSG
+    END 
+  RETURN
+***************************************************************************
+NEWCUST.BYCOMP:
+
+    NEWCUS.J.COMP.AM.COUNT = DCOUNT((NEWCUS.J.COMP), @AM) ; FOR COMP = 1 TO (NEWCUS.J.COMP.AM.COUNT) ; NEWCUS.J = (NEWCUS.J.COMP)<(COMP)> 
+        NEWCUS.J = RAISE(NEWCUS.J)
+        IF COMP = 1 THEN 
+            RUN.MSG = "    Companies to submit:  ":NEWCUS.J.COMP.AM.COUNT
+            GOSUB LOG.MSG
+        END 
+        IF NEWCUS.J <> '' THEN 
+            COMPID =   COMP.LIST<COMP>
+            GOSUB NEWCUST.APICALL
+            NEWCUS.J.COMP<COMP> = ''
+            NEWCUS.BATCH<COMP> = ''
+        END 
+        NEWCUST.CT = @FALSE
+    NEXT COMP 
+    
+    RETURN
+***************************************************************************
+NEWCUST.BYONE:
+    *  Only called after a failed batch call to newcust.apicall.  Repeat for single customer.
+    *  Single customer can still fail, but won't prevent other custs in batch from processing.
+    *
+    *  This sub is predicated on newcust.bycomp running, with a failed batch.  
+    
+    NEWCUS.BATCH.VM.COUNT = DCOUNT((NEWCUS.BATCH<COMP>), @VM) ; FOR SINGLE.COMP = 1 TO (NEWCUS.BATCH.VM.COUNT) ; NEWCUS.J = (NEWCUS.BATCH<COMP>)<1, (SINGLE.COMP)> 
+        NEWCUS.J = RAISE(RAISE(NEWCUS.J))
+        RUN.MSG = "   Single customer process for company ":COMPID
+        GOSUB LOG.MSG
+        GOSUB NEWCUST.APICALL
+    NEXT SINGLE.COMP 
+    
+    RETURN
+***************************************************************************
+NEWCUST.APICALL:  
+          
+    IF NEWCUST.CT THEN 
+        NEWCUS.J    =   NEWCUS.J.H:AM:NEWCUS.J:AM:" ]"
+        * Prep json for use.  
+        JSON.OUT    =   NEWCUS.J
+        GOSUB PREP.JSON
+        NEWCUS.J    =   JSON.OUT
+        JSON.OUT = ''
+
+        RUN.MSG = "   Submitting new customer data to UD.AVA.CREATECUSTOMERS"
+        GOSUB LOG.MSG
+        
+        UD.AVA.CREATECUSTOMERS COMPID, NEWCUS.J, RESP, ERR.MSG
+
+        IF ERR.MSG <> '' THEN 
+            RUN.MSG = ERR.MSG
+            GOSUB LOG.MSG
+            READ.LAST.ACTION ERR.MSG, 'UD.AVA.CREATECUSTOMERS', ''
+            RUN.MSG = "  Error in ud.ava.createcustomers: "
+            GOSUB LOG.MSG
+            RUN.MSG = LOWER(ERR.MSG)
+            GOSUB LOG.MSG
+            RESP = ''
+            IF NOT( SINGLEBATCH ) THEN 
+                * Turn on Single Batch to prevent infinite looping.
+                SINGLEBATCH = @TRUE
+                GOSUB NEWCUST.BYONE
+                * Turn off Single Batch when error process complete.
+                SINGLEBATCH = @FALSE
+            END 
+        END 
+        * Write UD.AVALARA data to file. Track Portal Cert ID, effective and expiration dates.
+          ** deal with issue where response doesn't come back exactly correct from AVA.DO.REQUEST.
+        RESP = TRIM (RESP)
+        IF (RESP[LEN(RESP),1] = "]") AND (RESP[1,1] # "[") THEN 
+            RESP    =   "[":RESP
+        END 
+        UD.AVA.PARSE.NEWCUSTS RESP, AVAIDS, AVA_RECS
+        AVAIDS.AM.COUNT = DCOUNT((AVAIDS), @AM) ; FOR CUST.PTR = 1 TO (AVAIDS.AM.COUNT) 
+            AVA_ID_RECORD = ''
+            AVA_CERTID = ''
+            RUN.MSG = "   Customer data recording for:  ":FIELD (AVAIDS<CUST.PTR>,'~',1)
+            GOSUB LOG.MSG
+            AVAID = FIELD (AVAIDS<CUST.PTR>,'~', 1):"~":FIELD (AVAIDS<CUST.PTR>,'~',2)
+            RUN.MSG = "    UD.AVALARA ID: ":AVAID
+            GOSUB LOG.MSG
+            AVA_CERTID  =   AVA_RECS<CUST.PTR,1,1>
+            AVA_CUSTID  =   AVA_RECS<CUST.PTR,2,1>
+            AVA_CEFD    =   AVA_RECS<CUST.PTR,7,1>
+            IF INDEX(AVA_CEFD,"-",1) THEN 
+                AVA_CEFD = ICONV (AVA_CEFD, AVADATEFORMAT)
+            END ELSE 
+                IF INDEX(AVA_CEFD,"/",1) THEN 
+                    AVA_CEFD = ICONV (AVA_CEFD, "D4/")
+                END 
+            END 
+            AVA_CEXD    =   AVA_RECS<CUST.PTR,8,1>
+            IF INDEX(AVA_CEXD,"-",1) THEN 
+                AVA_CEXD = ICONV (AVA_CEXD, AVADATEFORMAT)
+            END ELSE 
+                IF INDEX(AVA_CEXD,"/",1) THEN 
+                    AVA_CEXD = ICONV (AVA_CEXD, "D4/")
+                END 
+            END 
+            RUN.MSG = "   Avalara portal cert id: ":AVA_CERTID
+            GOSUB LOG.MSG
+            AVA_ID_RECORD<1>    =   AVA_CERTID
+            AVA_ID_RECORD<2>    =   AVA_CEFD
+            AVA_ID_RECORD<3>    =   AVA_CEXD
+            AVA_ID_RECORD<4>    =   AVA_CUSTID
+            WRITE (AVA_ID_RECORD) ON AVAIDFILE, (AVAID)
+        NEXT CUST.PTR 
+        
+        IF TROUBLESHOOTING THEN 
+            JSON.OUT    =   NEWCUS.J
+            GOSUB PREP.JSON
+            NEWCUS.J    =   JSON.OUT
+            JSON.OUT = ''
+            
+            NEWCUS.ID = 'newcus.j.':COMPID
+            WRITE NEWCUS.J ON CDFILE, NEWCUS.ID
+            NEWCUS.ID = 'resp.j.':COMPID
+            WRITE RESP ON CDFILE, NEWCUS.ID
+        END 
+        NEWCUS.J = ''
+        RESP = ''
+    END 
+  RETURN
+***************************************************************************
+***************************************************************************
+UPDATE.CUSTOMER: 
+    VALIDATED.CUSTOMER = @FALSE
+    IF NOT( UP.CUST ) THEN 
+        RUN.MSG = "   No data to update.  CN: ":CN
+        GOSUB LOG.MSG
+    * *    return
+    END 
+    IF NOT( UP.CUST ) THEN RETURN
+    
+    IF NOT( CUST.PORTAL ) THEN 
+        RUN.MSG = CN:"  Customer not in portal.  Nothing to update."
+        GOSUB LOG.MSG
+    * *    return
+    END 
+    IF NOT( CUST.PORTAL ) THEN RETURN
+    
+    UD.AVA.CUST.JSON CUST.JSON, CN, NEW.CUST
+    RESP = ''
+    UD.AVA.UPDATECUSTOMER COMPID, CN, CUST.JSON, RESP, ERR.MSG
+    
+    RUN.MSG = LOWER(RESP)
+    GOSUB LOG.MSG
+    RUN.MSG = LOWER(ERR.MSG)
+    GOSUB LOG.MSG
+    
+    UT.PARSE.JSON RESP, ARR.ITEMS, ARR.VALUES
+    IF NOT( UPCASE(ARR.ITEMS<1>)[1,5] = "ERROR" ) THEN 
+        * id is first, but use a locate to to find id if it's moved.
+        LOCATE 'id' IN ARR.ITEMS SETTING XLATE.PTR THEN UPDATED.CUST.ID = ARR.VALUES<XLATE.PTR> ELSE UPDATED.CUST.ID = ''
+        
+        IF UPDATED.CUST.ID = CUST.PORTAL.ID THEN VALIDATED.CUSTOMER = @TRUE
+        IF NOT( VALIDATED.CUSTOMER ) THEN 
+            RUN.MSG = "   Unable to validate Portal Customer ":CUST.PORTAL.ID:" to Updated Customer ":UPDATED.CUST.ID:"."
+            GOSUB LOG.MSG
+            RUN.MSG = "   Please review."
+            GOSUB LOG.MSG
+        END ELSE 
+            RUN.MSG = "   Cert created and updated to customer: ":UPDATED.CUST.ID:"."
+            GOSUB LOG.MSG
+        END 
+    END ELSE 
+        RUN.MSG = "Error!"
+        GOSUB LOG.MSG
+        * INCLUDE LAST ACTION FROM LINKING API?
+    END 
+    RETURN
+***************************************************************************
+CREATE.LINK.CERTIFICATE:
+    * Create a new certificate and link to an existing customer.
+    VALIDATED.CUSTOMER = @FALSE
+    NEWCERT_CEFD = ''
+    NEWCERT_CEXD = ''
+    
+    * Customer has certificate(s)... if it happens to be in the delete list, remove it.
+    LOCATE (CN) IN (DEL.CUS.LST) SETTING DEL.LST.PTR ELSE DEL.LST.PTR = 0
+    IF DEL.LST.PTR <> 0 THEN 
+        DEL.CUS.LST = DELETE(DEL.CUS.LST, DEL.LST.PTR)
+    END 
+    * call cert json builder.
+    * cert.id must be active before calling create.link.certificate
+    UD.AVA.CERT.JSON CERT.JSON, CN, CERT.ID
+    IF NOT( CERT.JSON ) THEN 
+        RUN.MSG = "  No valid Certificate JSON created.  Unable to Create/Link Cert ":CERT.ID:"."
+        GOSUB LOG.MSG
+    END 
+    IF NOT( CERT.JSON ) THEN RETURN
+    
+    * Create requires cert JSON in JSON Array.
+    IF JSON.OUT = '' THEN JSON.OUT = ("[") ELSE JSON.OUT := @AM : ("[")
+    IF JSON.OUT = '' THEN JSON.OUT = (CERT.JSON) ELSE JSON.OUT := @AM : (CERT.JSON)
+    IF JSON.OUT = '' THEN JSON.OUT = ("]") ELSE JSON.OUT := @AM : ("]")
+    
+    RESP = ''
+    * Prep json.
+    GOSUB PREP.JSON
+    CERT.JSON   =   JSON.OUT
+    JSON.OUT = ''
+
+    UD.AVA.CREATECERTIFICATES COMPID, @TRUE, CERT.JSON, RESP, ERR.MSG
+    
+    RUN.MSG = LOWER(RESP)
+    GOSUB LOG.MSG
+    RUN.MSG = LOWER(ERR.MSG)
+    GOSUB LOG.MSG
+
+    IF RESP[1,1] = "[" THEN 
+        UT.PARSE.JSON RESP, OBJ.ITEMS
+    END ELSE 
+        OBJ.ITEMS = RESP
+    END 
+    
+    UT.PARSE.JSON OBJ.ITEMS, ARR.ITEMS, ARR.VALUES
+    ** Locate 'id' in ARR.ITEMS setting POS THEN
+    **  cert.id = ARR.VALUES<POS>
+    LOCATE 'id' IN ARR.ITEMS SETTING XLATE.PTR THEN CERT.ID = ARR.VALUES<XLATE.PTR> ELSE CERT.ID = ''
+    LOCATE 'signedDate' IN ARR.ITEMS SETTING XLATE.PTR THEN NEWCERT_CEFD = ARR.VALUES<XLATE.PTR> ELSE NEWCERT_CEFD = ''
+    LOCATE 'expirationDate' IN ARR.ITEMS SETTING XLATE.PTR THEN NEWCERT_CEXD = ARR.VALUES<XLATE.PTR> ELSE NEWCERT_CEXD = ''
+
+    RESP = ''
+    * A cert id has been assigned.  Record it in the UD.AVALARA file.
+    IF CERT.ID THEN 
+        AVAID_ID = FIELD (ECMS_REC_ID, '~', 1):"~":FIELD (ECMS_REC_ID, '~', 2)
+        RUN.MSG = '   Cert ID: ':CERT.ID:' record to UD.AVALARA record: ':AVAID_ID
+        GOSUB LOG.MSG
+        WRITEV (CERT.ID) ON AVAIDFILE, (AVAID_ID), (1)
+        READV CUR_CEFD FROM AVAIDFILE, (AVAID_ID), (2) ELSE CUR_CEFD = ''
+        READV CUR_CEXD FROM AVAIDFILE, (AVAID_ID), (3) ELSE CUR_CEXD = ''
+        *  Verify no previous entries written to file.  Write from Cert creation response if empty.
+        IF NOT( CUR_CEFD ) THEN 
+            IF INDEX(NEWCERT_CEFD,'-',1) THEN 
+                CONVERSION = "D-YMD[4,2,2]"
+            END ELSE 
+                CONVERSION = "D4/"
+            END 
+            NEWCERT_CEFD = ICONV (NEWCERT_CEFD, CONVERSION)
+            WRITEV (NEWCERT_CEFD) ON AVAIDFILE, (AVAID_ID), (2)
+        END 
+        IF NOT( CUR_CEXD ) THEN 
+            IF INDEX(NEWCERT_CEXD,'-',1) THEN 
+                CONVERSION = "D-YMD[4,2,2]"
+            END ELSE 
+                CONVERSION = "D4/"
+            END 
+            NEWCERT_CEXD = ICONV (NEWCERT_CEXD, CONVERSION)
+            WRITEV (NEWCERT_CEXD) ON AVAIDFILE, (AVAID_ID), (3)
+        END 
+        
+        RUN.MSG = '   Cert ID: ':CERT.ID:' linking to customer:  ':CN
+        GOSUB LOG.MSG
+    END 
+    IF NOT( (CERT.ID AND CN) ) THEN 
+        RUN.MSG = '  IDs invalid.  Unable to link. ':CN:"  ":CERT.ID
+        GOSUB LOG.MSG
+    END 
+    IF NOT( (CERT.ID AND CN) ) THEN RETURN
+    
+    * JSON of customer number to link certificate.
+    LINK.JSON = '{"customers":["':CN:'"]}'
+    UD.AVA.LINK.CUSTS.CERT COMPID, CERT.ID, LINK.JSON, RESP, ERR.MSG
+    RUN.MSG = LOWER(RESP)
+    GOSUB LOG.MSG
+    RUN.MSG = LOWER(ERR.MSG)
+    GOSUB LOG.MSG
+
+    UT.PARSE.JSON RESP, ARR.ITEMS, ARR.VALUES
+    IF ARR.ITEMS<1> = "@recordsetCount" THEN 
+        RESP.REC.CT = ARR.VALUES<1>
+        IF RESP.REC.CT # "1" THEN 
+            RUN.MSG = '   Unexepected link count.  Please review Cert ID ':CERT.ID:' for customer ':CN:'.'
+            GOSUB LOG.MSG
+        END 
+        * Two more parses.  Return data is Array containing 2 elements.
+        * First is the RecordsetCount.  Second is the Object value.
+        * Parse the Object.
+        UT.PARSE.JSON ARR.VALUES<2>, RET.JSON
+        * Parse the array inside the Object.
+        UT.PARSE.JSON RET.JSON<1>, CUS.ITEMS, CUS.VALUES
+        * id is first, but use a locate to to find id if it's moved.
+        LOCATE 'id' IN CUS.ITEMS SETTING XLATE.PTR THEN LINKED.CUST.ID = CUS.VALUES<XLATE.PTR> ELSE LINKED.CUST.ID = ''
+        
+        IF LINKED.CUST.ID = CUST.PORTAL.ID THEN VALIDATED.CUSTOMER = @TRUE
+        IF NOT( VALIDATED.CUSTOMER ) THEN 
+            RUN.MSG = "   Unable to validate Portal Customer ":CUST.PORTAL.ID:" to Linked Customer ":LINKED.CUST.ID:"."
+            GOSUB LOG.MSG
+            RUN.MSG = "   Please review."
+            GOSUB LOG.MSG
+        END ELSE 
+            RUN.MSG = "  Cert created and linked to customer: ":LINKED.CUST.ID:"."
+            GOSUB LOG.MSG
+            * Write Portal Customer ID to UD.AVALARA record.
+            WRITEV (LINKED.CUST.ID) ON AVAIDFILE, (AVAID_ID), (4)
+        END 
+    END ELSE 
+        IF ARR.ITEMS<1> = "error" THEN 
+            RUN.MSG = "    Error!"
+            GOSUB LOG.MSG
+            * INCLUDE LAST ACTION FROM LINKING API?
+        END 
+    END 
+
+    RETURN
+***************************************************************************
+UPDATE.CERTIFICATE:
+    * Update a certificate for a customer, but independent of customer.
+    
+    IF NOT( UP.CERT ) THEN 
+        RUN.MSG = "   No cert data to update.  Cert:  ":CERT.ID
+        * * return
+    END 
+    IF NOT( UP.CERT ) THEN RETURN
+    
+    * Customer has certificate(s)... if it happens to be in the delete list, remove it.
+    LOCATE (CN) IN (DEL.CUS.LST) SETTING DEL.LST.PTR ELSE DEL.LST.PTR = 0
+    IF DEL.LST.PTR <> 0 THEN 
+        DEL.CUS.LST = DELETE(DEL.CUS.LST, DEL.LST.PTR)
+    END 
+    * call cert json builder.
+    UD.AVA.CERT.JSON CERT.JSON, CN, CERT.ID
+    
+    RESP = ''
+    UD.AVA.UPDATECERTIFICATE COMPID, CERT.ID, CERT.JSON, RESP, ERR.MSG
+    RUN.MSG = LOWER(RESP)
+    GOSUB LOG.MSG
+    RUN.MSG = LOWER(ERR.MSG)
+    GOSUB LOG.MSG
+  RETURN
+***************************************************************************
+PROC.DELETES:    
+
+    PHST.MSG    =   OCONV (TIME(), "MTHS"):" Process Deletes"
+    GOSUB LOG.MSG
+    SV.DEL.CERT.CNT = ''
+    SV.DEL.CNT = ''
+    PROC_CUSTS = ''
+    
+    IF NOT( FULL.SYNC ) THEN 
+        RUN.MSG =   "Build customer evaluation list."
+        GOSUB LOG.MSG
+        LOOP WHILE READNEXT CN FROM PROC_DELLIST DO 
+            LOCATE (CN) IN PROC_CUSTS SETTING THROWAWAY.PTR ELSE IF PROC_CUSTS = '' THEN PROC_CUSTS = (CN) ELSE PROC_CUSTS := @AM : (CN)
+        REPEAT 
+    END 
+    PORTAL.CUST.LST.AM.COUNT = DCOUNT((PORTAL.CUST.LST), @AM) ; FOR DEL.CUST.PTR = 1 TO (PORTAL.CUST.LST.AM.COUNT) ; PCN = (PORTAL.CUST.LST)<(DEL.CUST.PTR)> 
+        IF TROUBLESHOOTING THEN 
+            IF DEL.CUST.PTR > 50 THEN 
+                RUN.MSG = "Stopping at 50 deletions!"
+                GOSUB LOG.MSG
+                EXIT
+            END 
+        END 
+        
+        ** Process ALL Cust/Cert Combinations in a Full Sync.
+        PROC_ME = @FALSE
+        IF PROC_CUSTS <> '' THEN 
+            IF NOT(PROC_ME) THEN LOCATE PCN IN PROC_CUSTS SETTING THROWAWAY THEN PROC_ME = @TRUE
+        END ELSE 
+            IF FULL.SYNC THEN 
+                PROC_ME = @TRUE
+            END 
+        END 
+        IF NOT( PROC_ME ) THEN 
+            IF TROUBLESHOOTING THEN 
+                RUN.MSG = "  ":PCN:" Skipped delete check."
+                GOSUB LOG.MSG
+            END 
+            IF NOT( PROC_ME ) THEN CONTINUE
+        END 
+        
+        * Loop through remaining certificates of customer.
+        RUN.MSG = "Evaluate customer ":PCN:" for deletion."
+        GOSUB LOG.MSG
+        
+        READ CUS.REC FROM CUSFILE, (PCN) ELSE CUS.REC = ''
+        GOSUB GET.API.COMPID
+        
+        * Put customers exemption ids in new variable to allow cleaning up original.
+        *pcn.cert.lst = portal.cert.lst<del.cust.ptr>
+        PORTAL.CERT.LST.VM.COUNT = DCOUNT((PORTAL.CERT.LST<DEL.CUST.PTR>), @VM) ; FOR DEL.CERT.PTR = (PORTAL.CERT.LST.VM.COUNT) TO 1 STEP -1 ; PEN = (PORTAL.CERT.LST<DEL.CUST.PTR>)<1, (DEL.CERT.PTR)> 
+            VALID.CERT = @TRUE
+            UNEXPIRED.CERT = @TRUE
+            PORTAL_REC_ID   = PCN:"~":PEN
+            C.CERT.REGION = ''
+            C.CERT.NUM = ''
+            C.CERT.CITY = ''
+            EXEMPT.REASON = ''
+            EXP.DATE = @FALSE
+            
+            *cert.id = fetch (tempfile, portal_rec_id, 1, 1)
+            CERT.ID = FIELD (PEN, "~", 2)
+RETRY.CERTID:   *** IF WE FIND A CERT ID IN A LATER STEP, RETRY THE DELETE.            
+            IF CERT.ID THEN 
+                RUN.MSG = " Cert id ":CERT.ID:" is still listed for customer ":PCN:"."
+                GOSUB LOG.MSG
+                * Verify exemption is no longer valid on customer!
+                AVAID_ID = PCN:"~":FIELD (PEN, "~",1)
+                RUN.MSG = "  Fetching UD.AVALARA record ":AVAID_ID
+                GOSUB LOG.MSG
+                READV AVAID_CID FROM AVAIDFILE, (AVAID_ID), (1) THEN AVAID_CID = AVAID_CID<1,(1)> ELSE AVAID_CID = ''
+                
+                IF AVAID_CID = CERT.ID THEN 
+                    C.CERTS         =   CUS.REC<33>
+                    C.CERTS.VM.COUNT = DCOUNT((C.CERTS), @VM) ; FOR C.CERT.NO = 1 TO (C.CERTS.VM.COUNT) 
+                        C.CERT.REGION   =   (UPCASE(TRIM(CUS.REC<33,C.CERT.NO>)))
+                        C.CERT.NUM      =   (UPCASE(TRIM(CUS.REC<34,C.CERT.NO>)))
+                        IF C.CERT.REGION:C.CERT.NUM = FIELD(PEN, "~", 1) THEN 
+                            C.CERT.CITY     =   CUS.REC<175,C.CERT.NO,1>
+                            EXEMPT.REASON   =   FIELD(CUS.REC<105,C.CERT.NO>,'=',1)
+                            *exp.date        =   cus.rec<172,c.cert.no>
+                            * Expiring all certificates
+                            EXP.DATE   =  20821
+                            EXP.DATE  +=  0
+                            EXIT
+                        END 
+                    NEXT C.CERT.NO 
+                    IF NOT( EXP.DATE ) THEN 
+                        ADD.OUTPUT.TEXT = ((SPACE(4):"No valid expiration date on customer rec.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                        *exp.date = fetch (avaidfile, avaid_id, 3)
+                        * Expiring all certificates
+                         EXP.DATE   =  20821
+                         EXP.DATE  +=  0
+
+                    END 
+                    IF INDEX(EXP.DATE,"/",1) THEN 
+                        CEXD        =   ICONV(EXP.DATE,"D4/")
+                    END ELSE 
+                        CEXD        =   EXP.DATE
+                    END 
+                    IF CEXD = '' THEN 
+                        CEXD = @FALSE
+                    END 
+                    UNEXPIRED.CERT  =   (CEXD > DATE())
+                    
+                    *Test for a Type other than G or I, Resale or Inducstrial/mfg
+                    VALID.CERT = (EXEMPT.REASON = "G") OR (EXEMPT.REASON = "I") OR (EXEMPT.REASON = "DEN")
+                    IF C.CERT.REGION = "CO" AND EXEMPT.REASON = "DEN" THEN 
+                    *Skip if DEN, but a City of Denver exemption exists.
+                        VALID.CERT = VALID.CERT AND (C.CERT.CITY # "DENVER")
+                    END 
+                    VALID.CERT = VALID.CERT AND UNEXPIRED.CERT
+                    IF VALID.CERT THEN 
+                        RUN.MSG = "  Cert id ":CERT.ID:" is valid.  No delete."
+                        GOSUB LOG.MSG
+                        * Leave this cert in the cert list, to prevent deletion of a valid customer
+                        * with valid certificates.
+                        IF VALID.CERT THEN CONTINUE
+                    END ELSE 
+                        RUN.MSG = CERT.ID" does not represent a valid customer exemption."
+                        GOSUB LOG.MSG
+                    END 
+                END ELSE 
+                    RUN.MSG = "  Cert ID from UD.AVALARA, ":AVAID_CID:", does not match portal, ":CERT.ID:"."
+                    GOSUB LOG.MSG
+                    RUN.MSG = "   Duplicate to be deleted."
+                    GOSUB LOG.MSG
+                END 
+                
+                GOSUB DELETE.CERT
+                
+                IF CERT.DELETED THEN 
+                    DEL.CERT.CNT += 1
+
+                    * Also delete UD.AVALARA record.  
+                    IF AVAID_CID = CERT.ID THEN 
+                        RUN.MSG = "   avaid_cid ":AVAID_CID:" = cert.id ":CERT.ID
+                        GOSUB LOG.MSG
+                        RUN.MSG = "   Deleting UD.AVALARA record."
+                        GOSUB LOG.MSG
+                        DELETE AVAIDFILE, AVAID_ID ELSE 
+                            RUN.MSG = "Unable to remove UD.AVALARA record.  Please review:  ":AVAID_ID
+                            GOSUB LOG.MSG
+                        END 
+                    END 
+                END 
+            END ELSE 
+                READV CERT.ID FROM TEMPFILE, (PORTAL_REC_ID), (1) THEN CERT.ID = CERT.ID<1,(1)> ELSE CERT.ID = ''
+                IF NOT( CERT.ID ) THEN 
+                    RUN.MSG = " Exemption ":PORTAL_REC_ID:" is still listed, but has no Cert ID."
+                    GOSUB LOG.MSG
+                END ELSE 
+                    GOTO RETRY.CERTID
+                END 
+            END 
+            RUN.MSG = " Removing ":PORTAL_REC_ID:" from customer's cert list."
+            GOSUB LOG.MSG
+            
+            LOCATE PEN IN (PORTAL.CERT.LST<DEL.CUST.PTR>)<1> SETTING DELCERT ELSE DELCERT = @FALSE
+            IF DELCERT THEN 
+                PORTAL.CERT.LST = DELETE (PORTAL.CERT.LST, DEL.CUST.PTR, DEL.CERT.PTR)
+            END ELSE 
+                RUN.MSG = " cert not found in cert list:  ":PORTAL_REC_ID
+                GOSUB LOG.MSG
+            END 
+        NEXT DEL.CERT.PTR 
+        
+        *  Once CERTS processed, Check customer
+        *list certs linked to customer.  If @recordset = 0, delete customer.  Skip otherwise.
+        IF ALPHA( (PCN) ) THEN 
+            RUN.MSG = " Non-numeric customer id.  Skipping customer delete checking."
+        END 
+        IF ALPHA( (PCN) ) THEN CONTINUE
+        
+        UD.AVA.LIST.CERTSFORCUST COMPID, PCN, , , 1, , , RESP, ERR.MSG
+        UT.PARSE.JSON RESP, OBJ.ITEMS, OBJ.VALUES
+        CUST.CERT.CT = @FALSE
+        IF OBJ.ITEMS<1> = "@recordsetCount" THEN 
+            CUST.CERT.CT = OBJ.VALUES<1>
+            RUN.MSG = "Customer ":PCN:" certificate count: ":CUST.CERT.CT
+            GOSUB LOG.MSG
+        END ELSE 
+            IF ERR.MSG THEN 
+                RUN.MSG = "Error!  ":ERR.MSG
+                GOSUB LOG.MSG
+            END 
+            * Nothing to do.
+        END 
+        IF CUST.CERT.CT <> 0 THEN 
+            RUN.MSG = " Certificates (":CUST.CERT.CT:") attached to customer ":PCN:".  Do not delete."
+            GOSUB LOG.MSG
+        END ELSE 
+            RUN.MSG =   "Customer ":PCN:" has no certificates on portal.  Deleting."
+            GOSUB LOG.MSG
+            GOSUB DELETE.PORTAL.CUSTOMER
+            DEL.CNT += 1
+        END 
+
+        * Status monitor.
+        IF (SV.DEL.CERT.CNT # DEL.CERT.CNT) OR (SV.DEL.CNT # DEL.CNT) THEN 
+            IF (MOD(DEL.CERT.CNT,10) = 0) OR (MOD(DEL.CNT,10) = 0) THEN 
+                PHST.MSG = DEL.CERT.CNT:" Certs, and ":DEL.CNT : " Customers deleted."
+                GOSUB LOG.MSG
+            END 
+            SV.DEL.CERT.CNT =   DEL.CERT.CNT
+            SV.DEL.CNT      =   DEL.CNT
+        END 
+        WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+        GOSUB CHECK.TIME.LIMIT
+    NEXT DEL.CUST.PTR 
+    IF FULL.SYNC THEN 
+        UD.AVALARA.SELECT = 'SELECT UD.AVALARA WITH CN.INVALID = "1"'
+        EXECUTE UD.AVALARA.SELECT CAPTURING MSG
+        MSG = TRIM (MSG, AM, "A")
+        MSG = FIELD (MSG, " ", 1)
+        RUN.MSG = MSG:" invalid UD.AVALARA records to be deleted."
+        SELECTE TO UDRECS
+        LOOP WHILE READNEXT AVAID_ID FROM UDRECS DO 
+            DELETE AVAIDFILE, AVAID_ID THEN 
+                RUN.MSG = "Record deleted.  ":AVAID_ID
+                GOSUB LOG.MSG
+            END ELSE 
+                RUN.MSG = "Unable to remove UD.AVALARA record.  Please review:  ":AVAID_ID
+                GOSUB LOG.MSG
+            END 
+        REPEAT 
+    END 
+    
+    RETURN
+***************************************************************************
+DELETE.CERT:
+    CERT.DELETED = @FALSE
+    
+    IF CERT.ID THEN 
+        IF NOT(ALPHA( PCN )) THEN 
+            UNLINK.JSON = '{"customers":["':PCN:'"]}'
+            UD.AVA.UNLINK.CUSTS.CERTS COMPID, CERT.ID, UNLINK.JSON, RESP, ERR.MSG
+            * run.msg = lower(resp)
+            * log.msg
+            * run.msg = lower(err.msg)
+            * log.msg
+            
+            LINKED.CT = @FALSE
+            UT.PARSE.JSON RESP, ITEMS, VALUES
+            IF ITEMS<1>  = "@recordsetCount" THEN 
+                LINKED.CT =   VALUES<1>
+            END ELSE 
+                IF (ITEMS<1>[1,5] = "error") OR (ERR.MSG) THEN 
+                    RUN.MSG = "    Unable to unlink customer from cert.  Cannot delete."
+                    GOSUB LOG.MSG
+                    GOTO SKIP.DELETE
+                END 
+            END 
+            
+            IF NUM( LINKED.CT ) THEN 
+                IF LINKED.CT <> 0 THEN 
+                    IF LINKED.CT = 1 THEN 
+                        * Parse value array.
+                        UT.PARSE.JSON VALUES<2>, VALUE.OBJECT
+                        * Parse object inside array.
+                        UT.PARSE.JSON VALUE.OBJECT<1>, OBJ.ITEMS, OBJ.VALUES
+                        LOCATE 'id' IN OBJ.ITEMS SETTING XLATE.PTR THEN LINKED.CUST.ID = OBJ.VALUES<XLATE.PTR> ELSE LINKED.CUST.ID = ''
+                        IF LINKED.CUST.ID = PCN THEN 
+                            RUN.MSG = "   Error.  Certifciate ":CERT.ID:" still linked to this customer: ":LINKED.CUST.ID
+                            GOSUB LOG.MSG
+                        END ELSE 
+                            RUN.MSG = "   Error.  Certificate ":CERT.ID:" linked to another customer: ":LINKED.CUST.ID
+                        END 
+                    END ELSE 
+                        RUN.MSG = "    Error.  Certificate ":CERT.ID:" linked to multiple customers."
+                        GOSUB LOG.MSG
+                        GOTO SKIP.DELETE
+                    END 
+                END 
+            END 
+        END 
+        RETRY.COUNT = @FALSE
+RETRY.DELETE:
+        ITEMS = ''
+        UD.AVA.DELETECERTIFICATE COMPID, CERT.ID, RESP, ERR.MSG
+        RUN.MSG = LOWER(RESP)
+        GOSUB LOG.MSG
+        RUN.MSG = LOWER(ERR.MSG)
+        GOSUB LOG.MSG
+        
+        IF ERR.MSG THEN 
+            IF TRIM(ERR.MSG) = "Request failure: Network error" AND NOT( RETRY.COUNT ) THEN 
+                * Temporary network issue... retry.
+                RETRY.COUNT += 1
+                RUN.MSG = "   Retry delete once."
+                GOSUB LOG.MSG
+                GOTO RETRY.DELETE
+            END 
+            RUN.MSG = "   Error message deleting certificate: ":CERT.ID
+            GOSUB LOG.MSG
+            RUN.MSG = "  ":ERR.MSG
+            GOSUB LOG.MSG
+            GOTO SKIP.DELETE
+        END 
+        UT.PARSE.JSON RESP, ITEMS, VALUES
+        IF ITEMS THEN 
+            RUN.MSG = "    There was an error deleting the certificate."
+        END ELSE 
+            RUN.MSG = "  Cert ":CERT.ID:" deleted."
+            GOSUB LOG.MSG
+            CERT.DELETED = @TRUE
+        END 
+        
+    END 
+SKIP.DELETE:    
+    
+  RETURN
+***************************************************************************
+DELETE.PORTAL.CUSTOMER:
+    CUST.DELETED = @FALSE
+    * Customer was marked for deletion after all portal certificates are removed.
+    * Evaluation of customer deletion is repeated after each cert deletion.
+    RUN.MSG = "   ":PCN:" to be deleted from the portal."
+    GOSUB LOG.MSG
+    UD.AVA.DELETECUSTOMER COMPID, PCN, RESP, ERR.MSG
+    RUN.MSG = LOWER(RESP)
+    GOSUB LOG.MSG
+    RUN.MSG = LOWER(ERR.MSG)
+    GOSUB LOG.MSG
+    UT.PARSE.JSON RESP, ITEMS, VALUES
+    IF ERR.MSG OR ITEMS THEN 
+        RUN.MSG = "   There was an error deleting the customer."
+        GOSUB LOG.MSG
+    END ELSE 
+        RUN.MSG = "   Customer ":PCN:" deleted."
+        GOSUB LOG.MSG
+        CUST.DELETED = @TRUE
+    END 
+    
+  RETURN
+***************************************************************************
+FETCH.PORTAL.DATA:
+
+    * Obtains customers from portal including their Certs.  Builds each customer
+    * certificate combination into a record structured like AVALARA_DATA file.
+    * This makes comparison and processing smoother.  We don't have to reinvent.
+    
+    ** Get portal customers and certs one of two ways.  They create mostly identical records.
+    PHST.MSG = "Get Portal Customers - ud.ava.port.custs"
+    GOSUB LOG.MSG
+    UD.AVA.PORT.CUSTS TEMP.NAME
+    IF RUN.TYPE = "Partial" THEN 
+        RUN.MSG = "Certificate download skipped for partial sync."
+        GOSUB LOG.MSG
+    END ELSE 
+        PHST.MSG = "Get Portal Certificates - ud.ava.port.certs"
+        GOSUB LOG.MSG
+        UD.AVA.PORT.CERTS TEMP.NAME
+    END 
+    GOSUB LOAD.PORTAL.DATA
+    PHST.MSG =   REC.CT:" portal customer / certificate combinations."
+    GOSUB LOG.MSG
+    
+  RETURN
+***************************************************************************
+LOAD.PORTAL.DATA:
+    SELECT TEMPFILE TO IMPORTS
+
+    *selecte to imports
+    RUN.MSG = "Starting"
+    GOSUB LOG.MSG
+    ** loop
+    LOOP WHILE READNEXT PREC.ID FROM IMPORTS DO
+    * Portal Rec ID.
+        **readnext prec.id }{
+        **    exit
+        **}
+
+        *Setup empty variables.
+        PCN = ''
+        PEN = ''
+        PEN.CID = ''
+        *    run.msg = prec.id
+        *    log.msg
+        * Read the portal cust/cert rec.    
+        * * read portal.rec from tempfile, prec.id }{
+            * * continue
+        * * }
+        READ PORTAL.REC FROM TEMPFILE, (PREC.ID) ELSE PORTAL.REC = ''
+        IF NOT( PORTAL.REC ) THEN CONTINUE
+        * * ifnull portal.rec {
+            * * continue
+        * * }
+
+        * Portal Customer Number.
+        PCN = FIELD (PREC.ID,'~',1)
+        * Portal Exemption Number (with Region)
+        PEN = FIELD (PREC.ID,'~',2)
+        * Portal Cert ID
+        PEN.CID = FIELD (PREC.ID,'~',3)
+        
+        * Store in customer list.  Keep track of customers downloaded from portal.
+        LOCATE PCN IN PORTAL.CUST.LST SETTING POS ELSE 
+        **notfound = set.ifnot.in (pcn,portal.cust.lst<1>) ; *only if not in array, no position.
+        **pos = find.vm(1,portal.cust.lst,pcn) ;  *only position, not conditional.
+        **if notfound { ; Replacing one locate statement with three new statement where each has it's own locate seems very inefficient.
+            
+            * INSERT customer number, customer portal ID, and spot for cert vm list.
+            PORTAL.CUST.LST = INSERT (PORTAL.CUST.LST,POS; PCN)
+            PORTAL.CUID.LST = INSERT (PORTAL.CUID.LST,POS; PORTAL.REC<2>)
+            PORTAL.CERT.LST = INSERT (PORTAL.CERT.LST,POS; '')
+        END 
+
+        * Store cert id (Region:ExemptNumber~cert.id) in parallel variable to customer list.
+        * Keep track of a customers certificate downloaded from portal.
+        **portal.cert.lst<pos,-1> = pen
+        IF PEN.CID THEN 
+            PEN = PEN:"~":PEN.CID
+        END 
+        * Once the position is insert for the customer (AM) then here I can just add to the VM list of Exemption IDs.
+        
+        IF PORTAL.CERT.LST<POS> = '' THEN PORTAL.CERT.LST<POS> = (PEN) ELSE PORTAL.CERT.LST<POS> := @VM : (PEN)
+        
+        * Count number of portal combination records for status monitoring.
+        REC.CT += 1
+        * Status monitor.
+        IF MOD (REC.CT, 2500) = 0 THEN 
+            PHST.MSG = REC.CT : " portal record combinations read."
+            GOSUB LOG.MSG
+        END 
+    REPEAT 
+    RETURN
+***************************************************************************
+GET.API.COMPID:
+    IF GL.BR <> '' THEN 
+        SV.GL.BR       =  GL.BR
+    END 
+    * Use the customer's home branch to determine company id.
+    GL.BR          =  CUS.REC<53>
+
+    IF NOT( GL.BR ) THEN 
+        * Use the default br if customer home.br is blank.
+        GL.BR       =  SV.GL.BR
+    END 
+    
+    * Only call out for the compid if we don't have one OR gl.br has changed.
+
+    IF ( NOT( (COMPID) ) ) OR (GL.BR # SV.GL.BR) THEN 
+
+        UD.AVA.GET.COMPANY.ID GL.BR, COMPID
+    END 
+
+  RETURN
+***************************************************************************
+CHECK.TIME.LIMIT:
+    IF RUN.LIMIT THEN 
+        RUN.TIME = (DATE() - (BEGIN.DATE)) * 24 * 60 * 60 + INT(TIME() - (BEGIN.TIME) + .5)
+        IF RUN.TIME > RUN.LIMIT THEN 
+            RUN.MSG =   "!!!! TIME LIMIT EXCEEDED !!!!"
+            GOSUB LOG.MSG
+            RUN.MSG =   "Shutting down."
+            GOSUB LOG.MSG
+            RETURN TO FINISH
+        END 
+    END 
+
+RETURN
+***************************************************************************
+PREP.JSON:
+    JSON.OUT = CHANGE (JSON.OUT, AM, CHAR(10))
+    JSON.OUT = CHANGE (JSON.OUT, VM, CHAR(10))
+RETURN    
+***************************************************************************
+
+* checksum: 1198
+* last change: 12/23/2025 06:53:15pm
+* last compile: 10/11/2022 10:39:41am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.ECMS.SYNC"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FORCED.PARTIAL,EMPTY.TIMELOG.DATE,FINISH,LOG.MSG,INITIALIZE,PREP.FILES,PROC.CUSTS,PROC.ONE,SKIP.PROCESSING,"
+        PROGRAM.LABEL.LIST := "PROCESS.NEW.CUST,NEWCUST.BYCOMP,NEWCUST.BYONE,NEWCUST.APICALL,UPDATE.CUSTOMER,CREATE.LINK.CERTIFICATE,"
+        PROGRAM.LABEL.LIST := "UPDATE.CERTIFICATE,PROC.DELETES,RETRY.CERTID,DELETE.CERT,RETRY.DELETE,SKIP.DELETE,DELETE.PORTAL.CUSTOMER,"
+        PROGRAM.LABEL.LIST := "FETCH.PORTAL.DATA,LOAD.PORTAL.DATA,GET.API.COMPID,CHECK.TIME.LIMIT,PREP.JSON,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 9 THEN
+        ON ERROR.THROW.PTR GOSUB FORCED.PARTIAL,EMPTY.TIMELOG.DATE,FINISH,LOG.MSG,INITIALIZE,PREP.FILES,PROC.CUSTS,PROC.ONE,SKIP.PROCESSING
+    END
+    IF ERROR.THROW.PTR >= 10 AND ERROR.THROW.PTR <= 16 THEN
+        ON ERROR.THROW.PTR - 9 GOSUB PROCESS.NEW.CUST,NEWCUST.BYCOMP,NEWCUST.BYONE,NEWCUST.APICALL,UPDATE.CUSTOMER,CREATE.LINK.CERTIFICATE,UPDATE.CERTIFICATE
+    END
+    IF ERROR.THROW.PTR >= 17 AND ERROR.THROW.PTR <= 23 THEN
+        ON ERROR.THROW.PTR - 16 GOSUB PROC.DELETES,RETRY.CERTID,DELETE.CERT,RETRY.DELETE,SKIP.DELETE,DELETE.PORTAL.CUSTOMER,FETCH.PORTAL.DATA
+    END
+    IF ERROR.THROW.PTR >= 24 AND ERROR.THROW.PTR <= 29 THEN
+        ON ERROR.THROW.PTR - 23 GOSUB LOAD.PORTAL.DATA,GET.API.COMPID,CHECK.TIME.LIMIT,PREP.JSON,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.ECMS.SYNC"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.ECMS.SYNC"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.ECMS.SYNC"
+ 
+    RETURN

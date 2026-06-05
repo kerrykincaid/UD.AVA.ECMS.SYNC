@@ -1,0 +1,273 @@
+    SUBROUTINE UD.AVA.GET.COMPANY.ID  (GL.BR, COMP.ID, LOG.ID, LOG.REC.ID)
+** Version# 0.0001[80] - 09/20/25 - 05:06pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.GET.COMPANY.ID at 05:06pm 09/20/2025 by *
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.GET.COMPANY.ID     *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 22414
+* last change: 10/11/2022 10:39:45am
+* last compile: 10/11/2022 10:39:45am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST to get the CompanyId from the CompanyCode               *
+*                                                                        *
+**************************************************************************
+* GL.BR              Branch for call... Read default branch from setup   *
+* COMP.ID            Company.Id derived from API call using Company.Code *
+**************************************************************************
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    IF UNASSIGNED(FILTERS) THEN FILTERS = '' ELSE IF FILTERS = @NULL THEN FILTERS = ''
+    IF UNASSIGNED(RESP) THEN RESP = '' ELSE IF RESP = @NULL THEN RESP = ''
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+    PGM.NAME        =   'UD.AVA.GET.COMPANY.ID'
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    * Store time stamp of current run.  Must be first to use caching of results.
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),'D4/'):" ":OCONV(TIME(),'MT')) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (DATE():" ":TIME()) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+* Pull login credentials and base URL from Control Record.
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.API.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, LIC.OR, "License", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CTRL.ID, "AvaTaxOptions" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULT.BR, "DefaultBranch" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CACHE.SECONDS, "GetCompCachSec", 300 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, API.PGM, "GetCompApiPgm" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+*       company.id = :: *** possibly need api to read companies, selecting dynamically.
+*   END.WITH
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+*   WITH MANAGER::OPEN
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+*   END.WITH
+    
+    READ SETTINGS FROM CTRLFILE, CTRL.ID ELSE 
+        SETTINGS = ''
+    END 
+    
+*  Set default branch in case GL.BR is not passed in.
+    IF UNASSIGNED(GL.BR) THEN GL.BR = DEFAULT.BR ELSE IF GL.BR = @NULL THEN GL.BR = DEFAULT.BR
+    IF UNASSIGNED(COMP.CODE) THEN COMP.CODE = '' ELSE IF COMP.CODE = @NULL THEN COMP.CODE = ''
+    IF UNASSIGNED(COMP.ID) THEN COMP.ID = '' ELSE IF COMP.ID = @NULL THEN COMP.ID = ''
+*  Standard Eclipse Subroutine to return COMPANY.CODE.    
+    AVA.GET.COMPANY.CODE GL.BR, COMP.CODE
+        
+*  Read all companies from API call to AVATAX.    
+    
+    IF COMP.CODE THEN 
+        FILTERS =   "companyCode eq ":COMP.CODE
+    END ELSE 
+        FILTERS = ''
+    END 
+* Store filters for comparison in cache.  If filters don't match, we need a fresh read.
+    ADD.OUTPUT.TEXT = (FILTERS) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    GOSUB CHECK.CACHED
+    
+    CALL @API.PGM ('',FILTERS,'','','',RESP,LOG.ID,LOG.REC.ID)
+
+PARSE.JSON: 
+*  Parse JSON.  First item is company count.    
+    UT.PARSE.JSON RESP, ITEMS, VALUES
+    
+    IF ITEMS<1>  = "@recordsetCount" THEN 
+        COMP.CT =   VALUES<1>
+    END ELSE 
+        IF ITEMS<1>[1,5] = "error" THEN 
+            ADD.OUTPUT.TEXT = (("Error.":SPACE(2):"See Response.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOSUB FINISH
+        END 
+        COMP.CT =   1
+    END 
+    IF NOT( COMP.CT ) THEN 
+        ADD.OUTPUT.TEXT = (("Error.":SPACE(2):"No companies returned.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+*  Re-parse second item of JSON.  Contains count qty of Company Objects.    
+    UT.PARSE.JSON VALUES<2>, ITEMS, NEW.VALUES
+    VALUES      =   NEW.VALUES
+*  We filtered in the API call to our Company Code.  If the filter failed, the call clears the filter
+*  then retries.  In that event we could get a list of ALL companies.  Loop through whatever is returned.    
+*  Loop through objects.  Parse each object.  Determine if Company Code matches branch Company Code.
+*  Return Company ID if matched.    
+    FOR X = 1 TO COMP.CT 
+        UT.PARSE.JSON ITEMS<X>, NEW.ITEMS, NEW.VALUES
+        LOCATE 'companyCode' IN NEW.ITEMS SETTING RESULT.POS THEN 
+            CHECK.CODE = NEW.VALUES<RESULT.POS>
+            IF CHECK.CODE = COMP.CODE THEN 
+                LOCATE 'id' IN NEW.ITEMS SETTING RESULT.POS THEN 
+                    COMP.ID = NEW.VALUES<RESULT.POS>
+                    EXIT
+                END 
+            END 
+        END 
+    NEXT X 
+    
+    IF NOT( COMP.ID ) THEN 
+        ADD.OUTPUT.TEXT = ("Company ID NOT found.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    
+FINISH:
+    ADD.OUTPUT.TEXT = (LOWER(RESP)) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+**************************************************************************
+CHECK.CACHED:
+    READ.LAST.ACTION TIMESTAMP, API.PGM, @FALSE, 1
+    IF TIMESTAMP THEN 
+        TS.DATE =   FIELD(TIMESTAMP," ",1)
+        TS.TIME =   FIELD(TIMESTAMP," ",2)
+        IF TS.DATE  =   DATE() THEN 
+            IF (TIME() - TS.TIME) < CACHE.SECONDS THEN 
+                READ.LAST.ACTION OLD.FILTER, API.PGM, @FALSE, 2
+                IF OLD.FILTER<1,2> = FILTERS THEN 
+                    READ.LAST.ACTION LOG.ENTRY, API.PGM, @FALSE
+                    LOG.CT = DCOUNT (LOG.ENTRY,AM)
+                    FOR LOG.LN = 1 TO LOG.CT 
+                        IF UPCASE(LOG.ENTRY<LOG.LN>[1,17]) = '{"@RECORDSETCOUNT' THEN 
+                            RESP = LOG.ENTRY<LOG.LN,1>
+                        END 
+                    NEXT LOG.LN 
+                END 
+            END 
+        END 
+    END 
+    * If we get here with a response, we are finished. 
+    IF RESP THEN 
+        ADD.OUTPUT.TEXT = ("Cached response used.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN TO PARSE.JSON
+    END ELSE 
+        ADD.OUTPUT.TEXT = ("Get fresh response.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+RETURN
+
+* checksum: 22414
+* last change: 10/11/2022 10:39:45am
+* last compile: 10/11/2022 10:39:45am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.GET.COMPANY.ID"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "PARSE.JSON,FINISH,CHECK.CACHED,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 5 THEN
+        ON ERROR.THROW.PTR GOSUB PARSE.JSON,FINISH,CHECK.CACHED,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.GET.COMPANY.ID"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.GET.COMPANY.ID"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.GET.COMPANY.ID"
+ 
+    RETURN

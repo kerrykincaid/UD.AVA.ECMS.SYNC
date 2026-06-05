@@ -1,0 +1,260 @@
+    SUBROUTINE UD.AVA.LINK.CERTS.CUSTS  (COMPANY.ID, CUST.ID, JSON, RESP, ERR.MSG, LOG.ID, LOG.REC.ID)
+** Version# 0.0001[80] - 09/20/25 - 05:06pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.LINK.CERTS.CUSTS at 05:06pm 09/20/2025 b*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.LINK.CERTS.CUSTS   *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 1310
+* last change: 10/11/2022 10:39:47am
+* last compile: 10/11/2022 10:39:47am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* modeled after the C# Avalara SDK.  LinkCertificatesToCustomer          *
+**************************************************************************
+* company.Id         The company ID that data belongs.  Call             *
+*               UD.AVA.GET.COMPANY.ID to determine company ID by branch. *
+* cust.id            The cust.id to lookup.  no cust id returns all ids  *
+* json               JSON document of certificates to be linked to cust. *
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** Link certificates to a customer
+*** </summary>
+*** <remarks>
+*** Link one or more certificates to a customer.
+***  
+*** A customer object defines information about a person or business that purchases products from your
+*** company. When you create a tax transaction in AvaTax, you can use the `customerCode` from this
+*** record in your `CreateTransaction` API call. AvaTax will search for this `customerCode` value and
+*** identify any certificates linked to this `customer` object. If any certificate applies to the transaction,
+*** AvaTax will record the appropriate elements of the transaction as exempt and link it to the `certificate`.
+***  
+*** </remarks>
+*** <param name="companyId">The unique ID number of the company that recorded this customer</param>
+*** <param name="customerCode">The unique code representing this customer</param>
+*** <param name="model">The list of certificates to link to this customer</param>
+*        public FetchResult<CertificateModel> LinkCertificatesToCustomer(Int32 companyId, String customerCode, LinkCertificatesModel model)
+*        {
+*            var path = new AvaTaxPath("/api/v2/companies/{companyId}/customers/{customerCode}/certificates/link");
+*            path.ApplyField("companyId", companyId);
+*            path.ApplyField("customerCode", customerCode);
+*            return RestCall<FetchResult<CertificateModel>>("POST", path, model);
+*        }
+
+** Pull login credentials and base URL from Control Record.
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INITIALIZE
+    IF SKIP.REASON THEN 
+        ADD.OUTPUT.TEXT = (SKIP.REASON) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+    IF CUST.ID AND NUM(CUST.ID) THEN 
+    * Customer ID only required for linking customers, linking and unlinking certificates.
+        METHOD.MOD = CHANGE(METHOD.MOD, "$cust.id$",CUST.ID)
+        ADD.OUTPUT.TEXT = ("Customer ":CUST.ID:" added to url.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END ELSE   
+        ADD.OUTPUT.TEXT = (("Invalid customer id.":SPACE(2):"Exiting.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    METHOD = CHANGE(METHOD, "$company.id$", COMPANY.ID)
+    METHOD          =   METHOD:METHOD.MOD
+    ADD.OUTPUT.TEXT = (("Method URL used is:":SPACE(2)):METHOD) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        
+    AVA.DO.REQUEST HTTP.TYPE, METHOD, JSON, , RESP, ERR.MSG, PGM.NAME:AM:LOG.ID, LOG.REC.ID
+    IF ERR.MSG THEN 
+        ADD.OUTPUT.TEXT = (("Error!":SPACE(2)):ERR.MSG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    ADD.OUTPUT.TEXT = (LOWER(JSON)) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = (LOWER(RESP)) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+FINISH:    
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+**************************************************************************
+INITIALIZE:
+***
+* Start up
+***
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+    PGM.NAME        =   'UD.AVA.LINK.CERTS.CUSTS'
+    SKIP.REASON = ''
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/"):SPACE(2):OCONV(TIME(),"MT")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+* objects
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.API.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, LIC.OR, "License", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, CTRL.ID, "AvaTaxOptions" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULT.BR, "DefaultBranch" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, METHOD, "CustomerPostBase" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, METHOD.LINKCERT, "CustomerLinkCert" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+*   END.WITH
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+*   WITH MANAGER::OPEN
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+*   END.WITH
+    
+    METHOD.MOD  :=  METHOD.LINKCERT
+    ADD.OUTPUT.TEXT = ("Link certificates to customer.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+    READ SETTINGS FROM CTRLFILE, CTRL.ID ELSE 
+        RETURN
+    END 
+    
+*  Variables
+    IF UNASSIGNED(CUST.ID) THEN CUST.ID = '' ELSE IF CUST.ID = @NULL THEN CUST.ID = ''
+    
+    HTTP.TYPE       =   'POST'
+        
+    RUN.LOG<-1> =   "HTTP TYPE:  ":HTTP.TYPE
+    RUN.LOG<-1> =   "PGM Name:  ":PGM.NAME
+    
+    UT.SEC3 93, AVA.OK, '', NO
+
+* check for reasons to not do any processing
+    BEGIN CASE 
+
+    * the custom avalara api interface is not enabled.
+        CASE NOT( ENABLED )
+            SKIP.REASON = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        CASE NOT( AVA.OK ) AND NOT( LIC.OR )
+            SKIP.REASON = "Avalara is not licensed in this environment."
+    END CASE 
+ RETURN
+
+* checksum: 1310
+* last change: 10/11/2022 10:39:47am
+* last compile: 10/11/2022 10:39:47am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.LINK.CERTS.CUSTS"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,INITIALIZE,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 4 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,INITIALIZE,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.LINK.CERTS.CUSTS"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.LINK.CERTS.CUSTS"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.LINK.CERTS.CUSTS"
+ 
+    RETURN

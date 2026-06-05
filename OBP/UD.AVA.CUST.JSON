@@ -1,0 +1,408 @@
+    subroutine ud.ava.cust.json (json,cn,isnew)
+
+* subroutine - ud.ava.cust.json
+
+*---------------------------program description---------------------------*
+* Builds Avalara AVATAX API json document for New Customer or for updating
+* a single customer.
+*--------------------------parameter definition---------------------------*
+* json - json record for new customer, customer, or Cert.          [out]
+* cn   - Customer number to process.                                [in]
+* isnew - Boolean                                                   [in]
+*           New customer @true, existing customer @false [default]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    init
+    prep.files
+    
+    proc.cust
+    json = newrec.j
+    
+finish:
+    sub::write.last.action (output.buffer, pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    sub::ut.tempfile.delete (temp.name, tempfile)
+    exit.sub
+
+***************************************************************************
+***************************************************************************
+init: * initialize
+    begin.date = date()
+    begin.time = int(time())
+    buffer.clear ()
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+    pgm.name    =   "UD.AVA.CUST.JSON"
+* objects
+    setting = new (setting, "AVATAX.ECMS.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        var.eff.date    = :: ("var.eff.date", "-1/DA/YR")
+        var.exp.date    = :: ("var.exp.date", "+1/FE/YR")
+        avadateformat   = :: ("AvalaraDateFormat","D-YMD[Z4,2,2]")
+        * Record field tracking to determine if changes are to customer data, or certificate data.    
+        rec.fields~~~
+        rec.fields<1>   = :: ("CustomerFields")
+        rec.fields<2>   = :: ("CertificateFields")
+        comma.vm (rec.fields<1>)
+        comma.vm (rec.fields<2>)
+    }
+    if !enabled {
+        buffer ("Interface not enabled!" )
+        finish
+    }
+    
+    sub::realdate (def.eff.date, var.eff.date)
+    ifnot def.eff.date {
+        buffer ("  Bad Default Effective Date!  ")
+        def.eff.date = date()
+    }
+    
+* customer record
+    read cus.rec from cusfile,cn }{
+        return to finish
+    }
+    
+* variables    
+    assign (isnew)
+    phst.msg~~~
+    run.msg~~~
+    resp~~~
+    cmd~~~
+    cn.cnt~
+    procd.cns~~~
+    c.cert.cnt~
+    cert.count~
+    last.run~~~
+    last.run.rec~~~
+    envelp      =  char (34)
+    
+    
+* New customer and cert JSON.
+    newrec.j~~~
+    nrj.level   =  1
+    cur.cust~~~
+    cust.head~~~
+* build header portion of custom newrec.j (JSON).
+    cust.head<1>      =  "customerCode"
+    cust.head<2>      =  "name"
+    cust.head<3>      =  "line1"
+    cust.head<4>      =  "line2"
+    cust.head<5>      =  "line3"
+    cust.head<6>      =  "city"
+    cust.head<7>      =  "postalCode"
+    cust.head<8>      =  "country"
+    cust.head<9>      =  "region"   
+    cust.head<10>     =  "isBill"
+    cust.head<11>     =  "isShip"    
+    
+    cert.head~~~
+* build item portion of cert newrec.j.
+    cert.head<1>      =  "signedDate"
+    cert.head<2>      =  "expirationDate"
+    cert.head<3>      =  "filename"
+    cert.head<4>      =  "valid"
+    cert.head<5>      =  "exemptionNumber"
+    cert.head<6>      =  "exemptionReason"
+    cert.head<6, 2>   =  "name"
+    cert.head<7>      =  "taxNumberType"
+    cert.head<8>      =  "businessNumberType"
+    cert.head<9>      =  "exposureZone"
+    cert.head<9, 2>   =  "name"    
+    
+    cefd~~~
+    cexd~~~
+    bus.num.type~~~
+
+* pricing type to business type mapping variables.
+    read xref.types from ctrlfile, "UD.AVA.XREF.TYPES" }{
+        xref.types = ""
+    }
+    ava.bus.types = fetch (ctrlfile, 'UD.AVALARA.BUS.TYPE')
+    bus.num.type~~~
+    prc.type    =  cus.rec<35,1>
+    
+    locate prc.type in xref.types<1> setting type.pos }{
+        type.pos = ''
+    }
+    bus.type    =   xref.types<2,type.pos>
+    if !bus.type {
+        *bus.num.type    =   trim (prc.type)
+        bus.num.type    =   "Other"
+    }{
+        type.name =   xlate.vm (bus.type, ava.bus.types<1>, ava.bus.types<2>)
+        if type.name {
+            change (type.name, '-', ' ')
+            trim (type.name)
+            bus.num.type    =   type.name
+        }
+    }
+    
+**          read vst from statfile,'valid.us.states' else vst = ''
+    read vst from ctrlfile, "VALID.US.STATES" }{
+        vst = ""
+    }    
+
+* variables for api calls and caching.
+    gl.br          =  cus.rec<53>
+    if !gl.br {
+        gl.br = "1000"
+    }
+    sub::ud.ava.get.company.id (gl.br, comp.id)
+    sub::ud.ava.ezones (exp.zones)
+    e.reg       =  exp.zones<1>
+    e.names     =  exp.zones<2>
+    ezone.ct =  dcount (e.reg, vm)
+
+    return
+
+***************************************************************************
+prep.files:
+
+    sub::ut.open.file ("UD.AVALARA", avaifile, err.msg, yes)
+    if err.msg {
+        return
+    }
+    
+    sub::ut.open.file ("UD.AVALOG", avalogfile, err.msg, yes)
+    if err.msg {
+        buffer ("Error opening UD.AVALOG.  ":vm:err.msg)
+        goto finish
+    }
+    
+    return
+***************************************************************************
+***************************************************************************
+get.cus.country:
+    postal.len  = len(cus.postal)
+    cases {
+        case postal.len = 7
+         postal.lkup = cus.postal[1,7]
+        case postal.len = 6 and cus.postal[6,1] = "."
+         postal.lkup = cus.postal[1,6]
+        case otherwise
+         postal.lkup = cus.postal[1,5]
+    }
+
+    readv cus.country from zipfile,postal.lkup,5 else cus.country = 'US'
+    if not(cus.country) then cus.country = 'US'
+    
+  return
+***************************************************************************
+***************************************************************************
+proc.cust:
+    cert.ct~
+    certs~~~
+
+    c.cert.cnt = dcount(cus.rec<33>,vm)
+    if c.cert.cnt = 0 {
+        return
+    }
+    
+    * As we process certs, the customer will be setup first time through.
+    cur.cust<1>   =  cn
+    * Name.
+    cur.cust<2>   =  convert(char(34),char(39),trim(cus.rec<1>))
+    * Line 1
+    cur.cust<3>   =  convert(char(34),char(39),trim(cus.rec<2,1>))
+    * Line 2
+    cur.cust<4>   =  convert(char(34),char(39),trim(cus.rec<2,2>))
+    * Line 3
+    cur.cust<5>   =  convert(char(34),char(39),trim(cus.rec<2,3>))
+    * City
+    cur.cust<6>   =  trim(cus.rec<3>)
+    * Postal
+    cus.postal    =  trim(cus.rec<5>)
+    if cus.postal = "." {
+        buffer ("Invalid Zip code for customer: ":cn)
+        return
+    }
+    cur.cust<7>   =  cus.postal
+    * Country
+    get.cus.country
+    cur.cust<8>   =  cus.country
+    * Region (State)
+    cur.cust<9>   =  trim(cus.rec<4>)
+    * IsBill
+    cur.cust<10>  =  "true"
+    * IsShip
+    cur.cust<11>  =  "false"
+    
+    if !(isnew) {
+        goto start.json
+    }
+    
+    * get all certificates for customer.
+    for cert.no =   1 to c.cert.cnt {    
+* build certificate portion of new customer data.
+        * Skip any deleted or expired certificates.  (Not likely with a new customer, but possible).
+        cert.region       =  cus.rec<33,cert.no>
+        cert.number       =  cus.rec<34,cert.no>
+        avad_id =   cn:"~":cert.region:cert.number
+        if isnew {
+            eff.date    =   def.eff.date
+        }{
+            eff.date    =   fetch (avaifile, avad_id, 2)
+            ifnot eff.date {
+                eff.date    =   def.eff.date
+            }
+        }
+        
+        *exp.date    =   cus.rec<172,cert.no>
+        * Expiring all certificates
+        exp.date   =  20821
+        exp.date  +=  0
+        if !exp.date {
+            sub::realdate (defaultexpire, var.exp.date)
+            exp.date = fetch.default (avaifile, avad_id, 3, defaultexpire)
+        }
+        if index(eff.date,"/",1) {
+            cefd        =   iconv(eff.date,"D4/")
+        }{
+            cefd        =   eff.date
+        }
+        if index(exp.date,"/",1) {
+            cexd        =   iconv(exp.date,"D4/")
+        }{ 
+            cexd        =   exp.date
+        }
+        
+        if (cexd < date()) | (cefd > cexd) {
+            buffer ("Expired or invalid effective date on cert.")
+            continue
+        }
+        
+        cert.ct++
+        cur.cert~~~
+        
+        cur.cert<1>       =  oconv(cefd,avadateformat):"T00:00:00"
+        cur.cert<2>       =  oconv(cexd,avadateformat):"T00:00:00"
+        
+        * Is cert blank?  Use for future checking.
+        cert.blank        =  len(trim(cert.number)) = 0
+        sub::ud.ava.taxcert.img (cn, cert.number, cert.filename)
+        cur.cert<3>       =  cert.filename
+        cert.filename     =  ""
+        cur.cert<4>       =  "true"
+        cur.cert<5>       =  cert.number
+        exempt.reason     =  field(cus.rec<105,cert.no>,'=',1)
+        *Test for a Type other than G or I, Resale or Inducstrial/mfg
+        wrng.reas = (exempt.reason # "G") & (exempt.reason # "I")
+        *Test for DEN Type.  DEN is allowed here.
+        wrng.reas = (wrng.reas) & (exempt.reason # "DEN")
+        *Skip if Blank, NOT G, NOT I, NOT DEN.
+        skip.cert = (cert.blank | wrng.reas)
+        if cert.region = "CO" and exempt.reason = "DEN" {
+        *Skip if DEN, but a City of Denver exemption exists.
+            skip.cert = skip.cert & (cus.rec<175,cert.no,1> = "DENVER")
+        }
+        if skip.cert {
+            continue
+        }
+        
+        cases {
+            case exempt.reason    =  "I"
+                cert.reason = "INDUSTRIAL PROD/MANUFACTURERS"
+
+            case exempt.reason    =  "G"
+                cert.reason = "RESALE"
+        }
+        cur.cert<6, 2> =  cert.reason
+      
+        cur.cert<7>      =  "TIN"
+        cur.cert<8>      =  bus.num.type
+        
+        * exposure zones.
+        locate cert.region in e.reg<1> setting pos {
+        }
+        exp.zone.name        =  e.names<1, pos>
+        
+        cur.cert<9, 2> =  exp.zone.name
+        
+        certs< -1>       =  lower (cur.cert)
+    }
+        
+*   now we have a customer and all of their certificates.
+* create the newrec.j document to create the customer with certs.
+    cert.ct  =  dcount (certs, am)
+
+* no certs, no data to update.
+    if isnew &  !(cert.ct) {
+        buffer ("No new certificates to add for customer.")
+        return
+    }
+start.json:
+
+    sub::ut.add.json (nrj.level, newrec.j, "", "", 1)
+    
+    cx.count = dcount (cur.cust, am)
+
+    for cx   =  1 to cx.count {
+        mv.ct = dcount (cur.cust<cx>, vm)
+        if mv.ct = 2 {
+            if (cur.cust<cx, 2>) {
+                sub::ut.add.json (nrj.level, newrec.j, "", "", 1)
+                sub::ut.add.json (nrj.level, newrec.j, cust.head<cx, 2>, cur.cust<cx, 2>, "", yes)
+                sub::ut.add.json (nrj.level, newrec.j, "", "", 2)
+            }
+        }{
+            if (cur.cust<cx>) {
+                sub::ut.add.json (nrj.level, newrec.j, cust.head<cx>, cur.cust<cx>)
+            }
+        }
+    }
+* Only process certificates for a new customer.
+    if !isnew {
+        buffer ("Not a new customer!")
+        goto end.json
+    }
+    sub::ut.add.json (nrj.level, newrec.j, "certificates", "", 3)
+
+    for cert = 1 to cert.ct {
+        cur.cert =  raise (certs<cert>)
+        cc.id = cn : "~" : cur.cert<4>
+
+        sub::ut.add.json (nrj.level, newrec.j, "", "", 1)
+        cert.am.count = dcount (cur.cert, am)
+        for cert.am   =  1 to cert.am.count {
+            last.am =   (cert.am = cert.am.count)
+            mv.ct = dcount (cur.cert<cert.am>, vm)
+            if mv.ct = 2 {
+                if (cur.cert<cert.am, 2>) {
+                    sub::ut.add.json (nrj.level, newrec.j, cert.head<cert.am, 1>, "", 6)
+                    sub::ut.add.json (nrj.level, newrec.j, cert.head<cert.am, 2>, cur.cert<cert.am, 2>, "", yes)
+                    sub::ut.add.json (nrj.level, newrec.j, "", "", 2, last.am)
+                }
+            }{
+                if (cur.cert<cert.am>) {
+                    sub::ut.add.json (nrj.level, newrec.j, cert.head<cert.am>, cur.cert<cert.am>, "", last.am)
+                }
+            }
+        }
+        last.cert = (cert=cert.ct)
+        sub::ut.add.json (nrj.level, newrec.j, "", "", 2, last.cert)
+    }
+
+    sub::ut.add.json (nrj.level, newrec.j, "", "", 4, yes)
+end.json:
+    sub::ut.add.json (nrj.level, newrec.j, "", "", 2, yes)
+*    sub::ut.add.json (nrj.level, newrec.j, "", "", 4, yes)
+    if newrec.j {
+        msg.out = lower(newrec.j)
+        buffer (msg.out)
+    }{
+        buffer ("No JSON Created.")
+    }
+
+    return
+***************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+
+* checksum: 4666
+* last change: 12/23/2025 06:45:56pm
+* last compile: 10/11/2022 10:39:36am

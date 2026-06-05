@@ -1,0 +1,31 @@
+          SUBROUTINE (VAL)
+** Version# 0.0002 - 01/12/2022 - 10:56pm - KK05718 - eclipse
+*** V0.0002 Change - Custom Coding 090921 - 01/12/2022 - KK05718 - eclipse
+
+*** Subroutine - UD.DICT.AVA.TAX.STATE
+*---------------------------Program Description---------------------------*
+*** Dictionary subroutine to return State/Region where tax is calculated.
+*** Taxable state.
+***
+          VAL               =  ""
+
+          OID               =  FIELD(@ID,".",1)
+          GEN               =  FIELD(@ID,".",2)
+          TYPE              =  OID[1,1]
+
+          IF TYPE # "S" THEN RETURN
+
+          MATREAD LED FROM LEDFILE,OID ELSE
+             RETURN
+          END
+          OVRD.NOT.ALLOWED  =  YES
+
+          * Full call.
+          *TAX.GET.ADDRESS ADDRESS,OVRD,OID,GEN,AUDIT,OVRD.NOT.ALLOWED,FREIGHT.CODE,SOURCE.ADDRESS,POINT.ORD.ORIGIN,POINT.ORD.ACCEPT,FREIGHT.CODE.IN,FREIGHT.CODE.OUT
+          TAX.GET.ADDRESS ADDRESS,OVRD,OID,GEN,AUDIT,OVRD.NOT.ALLOWED
+
+          STATE =  ADDRESS<5>
+          IF STATE THEN VAL =  STATE
+
+          RETURN
+!KK05718~01/12/22~22:56

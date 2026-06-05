@@ -1,0 +1,148 @@
+    subroutine ud.ava.exposurezones (filters,top,skip,orderby,resp,err.msg,log.id,log.rec.id)
+ 
+**************************************************************************
+* API call routine.  Build the URL variables, method, then call          *
+* AVA.DO.REQUEST                                                         *
+* Modeled after the C# Avalara SDK.  ListCertificateExposureZones        *
+**************************************************************************
+* filters            list of filters.  (eg. $filter=region eq 'NC')      *
+* top                page size.  (eg. $top=500)                          *
+* skip               records to skip to start page (eg. $skip=1000) units*
+*                       of top.                                          *
+* orderby            A comma separated list of sort statements in the    *
+*                       format (fieldname) [ASC|DESC], for example id ASC*
+* RESP               The response from the web call to Avalara           *
+* ERR.MSG            Comm error or error from Avalara.                   *
+* LOG.ID             An optional string to be included in the logging    *
+* LOG.REC.ID         The ID of the API Log record created by process     *
+**************************************************************************
+*** <summary>
+*** List certificate exposure zones used by a company
+*** </summary>
+*** <remarks>
+*** List the certificate exposure zones defined by a company.
+***  
+*** An exposure zone is a location where a certificate can be valid. Exposure zones may indicate a taxing
+*** authority or other legal entity to which a certificate may apply.
+***  
+*** If you see the 'CertCaptureNotConfiguredError', please use CheckProvision and RequestProvision endpoints to
+*** check and provision account.
+*** </remarks>
+*** <param name="filter">A filter statement to identify specific records to retrieve. For more information on filtering, see [Filtering in REST](http://developer.avalara.com/avatax/filtering-in-rest/).<br />*Not filterable:* id, companyId, name, tag, description, created, modified, region, country</param>
+*** <param name="top">If nonzero, return no more than this number of results. Used with `$skip` to provide pagination for large datasets. Unless otherwise specified, the maximum number of records that can be returned from an API call is 1,000 records.</param>
+*** <param name="skip">If nonzero, skip this number of results before returning data. Used with `$top` to provide pagination for large datasets.</param>
+*** <param name="orderBy">A comma separated list of sort statements in the format `(fieldname) [ASC|DESC]`, for example `id ASC`.</param>
+*        public FetchResult<ExposureZoneModel> ListCertificateExposureZones(String filter, Int32? top, Int32? skip, String orderBy)
+        
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+
+    buffer ("Method URL used is:  ":method)
+    
+    set.params
+    buffer (params)
+    sub::ava.do.request (http.type,method,,params,resp,err.msg,pgm.name:am:log.id,log.rec.id)
+    if err.msg {
+        buffer ("Error!  ":err.msg)
+        finish
+    }
+
+finish:   
+    buffer (lower(resp))
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    exit.sub
+
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.EXPOSUREZONES'
+    skip.reason~~~
+    params~~~
+    buffer.clear ()    
+    buffer (oconv(date(),"D4/"):" ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        lic.or          = :: ("License", 0, 1)
+        ctrl.id         = :: ("AvaTaxOptions")
+        page.size       = :: ("PageSize",100)
+        method          = :: ("exposurezones")
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }
+    
+    read settings from ctrlfile, ctrl.id }{
+        settings~~~
+    }
+    
+*  Variables
+    assign (filters)
+    downcase (filters)
+    if not(top) {
+        top =   page.size
+    }
+    
+    http.type       =   'GET'
+    
+    buffer ("HTTP TYPE:  ":http.type)
+    buffer ("PGM Name:  ":pgm.name)
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+**************************************************************************
+set.params:
+    params~~~
+    *** Assume filters are valid.  Otherwise we need to parse and validate according to API.  TODO.
+    if filters {
+        param.pair = "$filter":vm:filters
+        params<-1> = param.pair
+    }
+    if top {
+        param.pair  = "$top":vm:top
+        params<-1> = param.pair
+    }
+    if skip {
+        param.pair  = "$skip":vm:skip
+        params<-1>  = param.pair
+    }
+    if orderby {
+        param.pair  = "$orderBy":vm:orderby
+        params<-1>  = param.pair
+    }
+    
+ return
+
+* checksum: 52900
+* last change: 10/11/2022 10:39:44am
+* last compile: 10/11/2022 10:39:44am

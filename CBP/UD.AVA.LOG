@@ -1,0 +1,178 @@
+          SUBROUTINE UD.AVA.LOG  (PASSER)
+** Version# 0.001[82] - 09/20/25 - 05:14pm  - SF08466 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.LOG at 05:14pm 09/20/2025 by SF08466    *
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.LOG                *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 25847
+* last change: 10/11/2022 10:39:50am
+* last compile: 10/11/2022 10:39:50am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+***       Subroutine:  UD.AVA.LOG
+***
+**************************************************************************
+***  Program to select a record, and view the change log for it in
+***  MAINT.LOG
+**************************************************************************
+***
+
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    REC.LIST = ''
+    RECS = ''
+    IF UNASSIGNED (PASSER) THEN 
+        RETURN
+    END 
+    IF INDEX (PASSER,'~',1) THEN 
+        REC.ID = PASSER
+        GOSUB DISPLAY.LOG
+    END ELSE 
+        CN    =   PASSER
+        GOSUB GET.ALL.RECS
+    END 
+FINISH:        
+ GOSUB EXIT.TO.CALLING.PROGRAM
+***************************************************************************
+DISPLAY.LOG:
+    MAINT.LOG.VIEW 'AVALARA_DATA':AM:REC.ID:AM:REC.ID
+    
+  RETURN
+***************************************************************************
+GET.ALL.RECS:  *** GET ALL THE TAX CERT RECS FOR THIS CUSTOMER.          
+
+    CMD   =   'SELECT AVALARA_DATA WITH CN = "':CN:'"'
+    EXECUTE (CMD) CAPTURING MSG RTNLIST REC.LIST
+
+    LOOP
+        READNEXT REC.ID FROM REC.LIST ELSE 
+            EXIT
+        END 
+     
+        LOCATE REC.ID IN RECS BY "AL" SETTING POS ELSE 
+            RECS    =   INSERT(RECS, POS; REC.ID)
+            IF POS > 8 THEN 
+                GOSUB FINISH
+            END 
+        END 
+        GOSUB DISPLAY.LOG
+    REPEAT 
+
+    RETURN
+***************************************************************************          
+
+* checksum: 25847
+* last change: 10/11/2022 10:39:50am
+* last compile: 10/11/2022 10:39:50am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+*     IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+*         OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.LOG"
+*         UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+*     END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,DISPLAY.LOG,GET.ALL.RECS,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 5 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,DISPLAY.LOG,GET.ALL.RECS,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.LOG"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.LOG"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.LOG"
+ 
+    RETURN

@@ -1,0 +1,16 @@
+          SUBROUTINE
+** Version# 0.0001[5] - 08/08/2022 - 11:44pm - KK05718 - eclipse
+*** V0.0001 Change - Custom Coding KK0808 - 08/08/2022 - KK05718 - eclipse
+          MSG = ""
+          EXECUTE "GET-LIST AVA.RECALC" CAPTURING MSG
+          AVALIST = ""
+          LOOP
+             READNEXT ID ELSE EXIT
+             AVALIST<1,-1> = ID
+          REPEAT
+
+          AVA.RECALC.TAX AVALIST
+
+          RETURN
+
+!KK05718~08/08/22~23:44

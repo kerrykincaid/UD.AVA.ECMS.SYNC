@@ -1,0 +1,206 @@
+          SUBROUTINE (TITLE,CTRL.ID,WIDTH,VIEW.ONLY)
+** Version# 0.0001[27] - 08/03/2020 - 06:51pm - KK05718 - eclipse
+*** V0.0001 Change - Custom Coding KK0571 - 08/03/2020 - KK05718 - eclipse
+** Copied from BP VALIDATE.CUS.CLASS Version# 10 - 12/04/2013 - 01:55pm - ZACHW - main
+
+*** Subroutine - UD.AVA.XREF.TYPES
+*-------------------------------------------------------------------------*
+*** The input arguments come from the UD.AVA.XREF.TYPES record.
+*** The width from that CMP record that is passed to this routine must be
+*** the same as the width set for the discount class input in the
+*** "PROMPT.CONTROL" control record..
+*-------------------------------------------------------------------------*
+*** TITLE     - Title of the screen                                 (IN)
+*** CTRL.ID   - Control ID                                          (IN)
+*** WIDTH     - Width                                               (IN)
+*** VIEW.ONLY - set to yes if in view only mode                     (IN)
+*-------------------------------------------------------------------------*
+
+          SCREEN
+          VSCROLL.DEFINE 1,1,3,25,12
+          VSCROLL.SET 1
+
+          READU CTRL.DATA FROM CTRLFILE,CTRL.ID ELSE CTRL.DATA = ''
+          OLD.DATA = CTRL.DATA
+
+          IF WIDTH+0 > 9 THEN WIDTH = 17
+          FRMT = '"L#':WIDTH:'"'
+
+          GOSUB DISPLAY
+          GOSUB LOAD.HKEYS
+
+          IF VIEW.ONLY THEN
+             PRINT @(2,0):BLINK$:'View Only':NORM$
+IN.VO:       INP A,0,0,0
+             IF QUIT THEN GOTO FINISH
+             GOTO IN.VO
+          END
+
+          LINE = 1 ; COL = 1 ; QUIT = 0 ; LASTKEY = 0
+*-------------------------------------------------------------------------*
+MOVENEXT: *** handles vscroll movement
+
+          DNOK  = (LINE<=DCOUNT(CTRL.DATA<1>,VM))
+          NEWOK = DNOK
+          LN.CT = DCOUNT(CTRL.DATA<1>,VM)
+          IF QUIT THEN GOTO FINISH
+          PARSEMOVE COL,LINE,2,LN.CT,12,DNOK,NEWOK
+
+          ON COL GOTO IN.PTYPE,IN.BTYPE
+*-------------------------------------------------------------------------*
+*** PTYPE input
+IN.PTYPE: INPV PTYPE,0,LINE,WIDTH,V_'C:VALID.CUS.TYPES'
+!          INPV PTYPE,0,LINE,WIDTH,'MCU'
+
+          IF CHANGED THEN
+             * prevent the user from blanking out the input
+             IF NOT(PTYPE) THEN
+                * reset to the old line info
+                PTYPE = CTRL.DATA<1,LINE>
+                VPRINT 0,LINE,SPACE(WIDTH)
+                VPRINT 0,LINE,PTYPE FRMT
+                GOTO IN.PTYPE
+             END
+
+             IF PTYPE # CTRL.DATA<1,LINE> THEN
+                * prevent dups from getting entered
+                LOCATE PTYPE IN CTRL.DATA<1> SETTING LPOS THEN
+                   ERR.MSG    = ''
+                   ERR.MSG<1> = 'TYPE "':PTYPE:'"'
+                   ERR.MSG<2> = 'Already Exists'
+                   GOSUB DISP.ERR.MSG
+
+                   * reset to the old line info
+                   VPRINT 0,LINE,SPACE(WIDTH)
+                   VPRINT 0,LINE,CTRL.DATA<1,LINE> FRMT
+                   GOTO IN.PTYPE
+                END ELSE
+                   CTRL.DATA<1,LINE> = PTYPE
+                END
+             END
+          END
+          IF QUIT THEN GOTO FINISH
+
+          GOTO MOVENEXT
+*-------------------------------------------------------------------------*
+*** BTYPE input
+IN.BTYPE: INPV BTYPE,18,LINE,6,'R0',V_'C:UD.AVALARA.BUS.TYPE,1,2'
+          IF CHANGED THEN
+             * don't allow a BTYPE if there is no PTYPE on this line
+             IF NOT(CTRL.DATA<1,LINE>) THEN
+                * reset to the old line info
+                BTYPE = ""; *CTRL.DATA<2,LINE>
+                VPRINT 18,LINE,SPACE(6)
+                VPRINT 18,LINE,BTYPE "R#6"
+                GOTO IN.BTYPE
+             END ELSE
+                CTRL.DATA<2,LINE> = BTYPE
+             END
+          END
+!          SEND.MESSAGE 'PHANTOM','KK05718',"CH: ":CHANGED:" CT: ":CTRL.DATA<2,LINE>:" BT: ":BTYPE
+          IF TRIM(CTRL.DATA<2,LINE>) = "" THEN
+             BTYPE = ""
+             ERR.MSG = 'BTYPE is required'
+             GOSUB DISP.ERR.MSG
+             IF NOT(CTRL.DATA<1,LINE>) THEN
+                GOTO IN.PTYPE
+             END ELSE
+                GOTO IN.BTYPE
+             END
+          END
+          IF QUIT THEN GOTO FINISH
+
+          GOTO MOVENEXT
+*-------------------------------------------------------------------------*
+DISPLAY:  *** display logic
+
+          LINE.CT = DCOUNT(CTRL.DATA<1>,VM)
+          FOR LINE = 1 TO LINE.CT
+             VPRINT  0,LINE,CTRL.DATA<1,LINE> FRMT
+             VPRINT 18,LINE,CTRL.DATA<2,LINE> "R#6"
+          NEXT LINE
+
+          RETURN
+*-------------------------------------------------------------------------*
+LOAD.HKEYS: *** load hotkeys
+
+          MENU.CLEAR
+          MENU.LOAD 2,16,3,1,'L'     ;* Log
+          MENU.LOAD ,,,,INSERT.KEY
+          MENU.LOAD ,,,,DELETE.KEY
+
+          RETURN
+*-------------------------------------------------------------------------*
+SUBS:     ON OPTION GOTO CHG.LOG,INS.LN,DEL.LN
+*-------------------------------------------------------------------------*
+CHG.LOG:  *** Display change log
+
+          CONTROL.DISP.MAINT.LOG CTRL.ID
+
+          RETURN
+*-------------------------------------------------------------------------*
+INS.LN:   *** insert line
+
+          IF LINE > DCOUNT(CTRL.DATA<1>,VM) THEN PRINT BELL:; RETURN
+
+          CTRL.DATA = INSERT(CTRL.DATA,1,LINE;'')
+          CTRL.DATA = INSERT(CTRL.DATA,2,LINE;'')
+
+          VINS LINE
+
+          RETURN
+*-------------------------------------------------------------------------*
+DEL.LN:   *** delete line
+
+          CTRL.DATA = DELETE(CTRL.DATA,1,LINE)
+          CTRL.DATA = DELETE(CTRL.DATA,2,LINE)
+                                                                           
+          VDEL LINE
+                                                                           
+          RETURN
+*-------------------------------------------------------------------------*
+CHK.VALID: *** check if all values are valid
+
+          ERR.MSG = ''
+
+          PTYPE.CT = DCOUNT(CTRL.DATA<1>,VM)
+          FOR CNUM = 1 TO PTYPE.CT
+             PTYPE = CTRL.DATA<1,CNUM>
+             IF NOT(NUM(PTYPE)) AND OCONV(PTYPE,'MCU') # "ALL" THEN
+                IF CTRL.DATA<2,CNUM> = '' THEN
+                   ERR.MSG<1> = 'TYPE "':PTYPE:'"'
+                   ERR.MSG<2> = 'BTYPE is required'
+                   EXIT
+                END
+             END
+          NEXT CNUM
+
+          RETURN
+*-------------------------------------------------------------------------*
+DISP.ERR.MSG: *** display error message
+
+          ERR.MESS 1,1,BELL:ERR.MSG,YES
+          ERR.MSG = ''
+
+          RETURN
+*-------------------------------------------------------------------------*
+FINISH:   *** exit this routine
+
+          IF F12 THEN
+             CONFIRM.ABORT SURE
+             IF NOT(SURE) THEN GOTO MOVENEXT
+          END ELSE
+             GOSUB CHK.VALID
+             IF ERR.MSG THEN
+                QUIT = NO
+                GOSUB DISP.ERR.MSG
+                GOTO MOVENEXT
+             END ELSE
+                UPDATE.RECORD 'CONTROL',CTRLFILE,CTRL.ID,OLD.DATA,CTRL.DATA,UPD.ERR,CHANGE
+             END
+          END
+          RELEASE CTRLFILE,CTRL.ID
+
+          WINDOW.CLOSE
+          RETURN
+!KK05718~08/03/20~18:51

@@ -1,0 +1,59 @@
+          SUBROUTINE (PASSER)
+** Version# 0.0004 - 04/16/2024 - 04:40pm - KK05718 - eclipse
+*** V0.0004 Change - Custom Coding 041624 - 04/16/2024 - KK05718 - eclipse
+** Copied from CBP UD.DVR.ECMS.SYNC Version# 0.0001[5] - 07/28/2021 - 02:09pm - KK05718 - eclipse
+** Copied from CBP AVA.DVR.ECMS Version# 0.0002 - 10/15/2020 - 05:52pm - KK05718 - eclipse
+*** V0.0003 Change - Custom Coding 081921 - 08/20/2021 - KK05718 - eclipse
+*** V0.0002 Change - Custom Coding 072821 - 07/30/2021 - KK05718 - eclipse
+*** V0.0001 Change - Custom Coding 061521 - 07/28/2021 - KK05718 - eclipse
+
+*** Subroutine - UD.DVR.ECMS.SYNC
+*-------------------------------------------------------------------------*
+*** Driver to either Begin or Schedule process.
+*-------------------------------------------------------------------------*
+*** Parameter Definitions
+*** PASSER - Not used
+*-------------------------------------------------------------------------*
+          CHECK.KEY 'CUST.TAX.VIEW',ENTRY.OK
+          IF NOT(ENTRY.OK) THEN
+             SEND.MESSAGE 'Phantom','AVAADMIN',"User ":USER.ID:" denied access to UD.DVR.ECMS.SYNC"
+             RETURN
+          END
+
+          SCREEN
+
+          MENU.LOAD  3,3,5,1,'B'
+          MENU.LOAD 12,3,8,1,'S'
+
+          ERR.MSG = ''
+          DRPT$ = 'Avalara ECMS Sync'
+          UT.OPEN.FILE 'UD.AVALARA',AVAIDFILE,ERR.MSG
+          IF ERR.MSG THEN RETURN
+          READV LAST.RUN FROM AVAIDFILE,'LAST.RUN',1 ELSE LAST.RUN=""
+          PRINT @(36,3):LAST.RUN "L#10"
+          CLOSE AVAIDFILE
+
+IN$$1:    INP A,0,0,1
+          IF A = "@" THEN PRINT "CHECK!"
+          IF A = "!" THEN CALL UD.AVA.ECMS.SYNC(ERR.MSG)
+          GOTO FINISH
+          IF QUIT THEN GOTO FINISH
+*-------------------------------------------------------------------------*
+SUBS:     ON OPTION GOTO BEGIN,BEGIN
+*-------------------------------------------------------------------------*
+BEGIN:    ***
+          IF OPTION = 2 THEN OPTION = 4 ELSE OPTION = 5
+          PROG.NAMES        =  'UD.AVA.PH.ECMS.SYNC'
+         *PROG.NAMES<1,-1>  =  'UD.AVA.DVR.ECMS.SYNC'
+          PH.EXE PROG.NAMES
+          *IF F12 THEN RETURN
+          IF F12 AND (DRPT$<1,2>) THEN
+             OPTION = 1
+             F12 = NO
+             GOTO BEGIN
+          END
+          RETURN TO FINISH
+*-------------------------------------------------------------------------*
+FINISH:   WINDOW.CLOSE
+          RETURN
+!KK05718~04/16/24~16:40

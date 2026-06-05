@@ -1,0 +1,252 @@
+    subroutine ud.ava.port.custs (json,record.ids,records)
+ 
+**************************************************************************
+* Parse JSON returned from an API call.  Specifically customer object    *
+* JSON.  This would be an object from UD.AVA.PORT.CUSTS or               *
+* UD.AVA.GET.CUSTOMER                                                    *
+**************************************************************************
+* json
+* record.id
+* record
+**************************************************************************
+
+** Pull login credentials and base URL from Control Record.
+    initialize
+    if skip.reason {
+        buffer (skip.reason)
+        finish
+    }
+*  Re-parse second item of JSON.  Contains array of customer objects.
+    sub::ut.parse.json (json, customers, customers_values)
+    
+*  Loop through customer objects.  Parse each object.
+    cust = each.am (customers, cust.ptr) { 
+        record.id~~~
+        record.data~~~
+        
+        sub::ut.parse.json (cust, port.items, port.values)
+        *port.items = (cust.items)
+        *port.values = (cust.values)
+        pitem.ct = dcount(port.items,am)
+        for pitem = 1 to pitem.ct {
+            cases {
+                case upcase(port.items<pitem>) = "ID"
+                    * Store customer portal id in Att2.
+                    record.data<2>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "COMPANYID"
+                    record.data<9>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "CUSTOMERCODE"
+                    record.id   =   port.values<pitem>
+                case upcase(port.items<pitem>) = "NAME"
+                    record.data<17>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "LINE1"
+                    record.data<18>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "LINE2"
+                    record.data<19>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "LINE3"
+                    record.data<20>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "CITY"
+                    record.data<21>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "POSTALCODE"
+                    record.data<23>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "CREATEDDATE"
+                    *record.data<8>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "MODIFIEDDATE"
+                    *record.data<9>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "COUNTRY"
+                    record.data<24>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "REGION"
+                    record.data<22>  =   port.values<pitem>
+                case upcase(port.items<pitem>) = "ISBILL"
+                    record.data<25>  =   'Active'
+                    *port.values<pitem>
+                case upcase(port.items<pitem>) = "ISSHIP"
+                    record.data<26>  =   'Accepted'
+                    *port.values<pitem>
+                case upcase(port.items<pitem>) = "CERTIFICATES"
+                    parse.certificates
+                case otherwise
+                    *record.data<10+pitem>   =   port.values<pitem>
+                    buffer ("Skipped: ":port.items<pitem>:" : ":port.values<pitem>)
+            }
+        }
+        if record.data {
+            cert.ct =   dcount(certs,am)
+            sv.record.data  =   record.data
+            sv.record.id    =   record.id
+            cur.cert.low = each.am(certs, c.rec) {
+                record.data =   sv.record.data
+                *cur.cert = raise(certs<c.rec>)
+                cur.cert = raise(cur.cert.low)
+                cert.am.ct = dcount(cur.cert,am)
+                for cert.att = 1 to cert.am.ct {
+                    if cur.cert<cert.att> {
+                        record.data<cert.att> = cur.cert<cert.att>
+                    }
+                }
+                record.id       =   sv.record.id:"~":cur.cert<4>:cur.cert<5>:'~':cur.cert<1>
+                buffer (" Record ID: ":record.id)
+                record.ids<-1>  =   record.id
+                records<-1>     =   lower(record.data)
+            }
+            ifzero certs.am.count {
+                record.ids<-1>  =   sv.record.id:"~XX"
+                records<-1>     =   lower(record.data)
+            }
+        }
+    }
+    
+finish:    
+    sub::write.last.action (output.buffer,pgm.name)
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+**************************************************************************
+parse.certificates:
+    c.data~~~
+    certs~~~
+    ci.ct~
+    sub::ut.parse.json (port.values<pitem>,certificates.items,certificates.values)
+    cert = each.am (certificates.items) {
+        sub::ut.parse.json (certificates.items<cert>,cert.items,cert.values)
+        c.data~~~
+        citem = each.am (cert.items) {
+            it.name = upcase(cert.items<citem>)
+            it.val  = cert.values<citem>
+            cases {
+                case it.name = "ID"
+                    c.data<1>  =   it.val
+                case it.name = "SIGNEDDATE" 
+                    c.data<7>  =   it.val
+                case it.name = "EXPIRATIONDATE"
+                    c.data<8>  =   it.val
+                case it.name = "EXEMPTIONNUMBER"
+                    c.data<5>  =   it.val
+                case it.name = "EXEMPTIONREASON"
+                    parse.exemption.reason
+                case it.name = "TAXNUMBERTYPE"
+                    c.data<6>  =   it.val
+                case it.name = "BUSINESSNUMBERTYPE"
+                    if num(it.val) {
+                        c.data<13> =   it.val
+                        c.data<14>~~~
+                    }{
+                        c.data<13> =   "20"
+                        c.data<14> =   it.val
+                    }
+                case it.name = "EXPOSUREZONE"
+                    parse.exposure.zone
+                case otherwise
+                    * Do nothing.
+            }
+        }
+        if c.data<1> {
+            certs<-1> = lower(c.data)
+        }
+    }
+        
+    return
+**************************************************************************
+parse.exemption.reason:
+    sub::ut.parse.json (it.val, ex.items, ex.values)
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    eitem.ct = dcount (ex.items,am)
+    for eitem = 1 to eitem.ct {
+        eit.name    = upcase (ex.items<eitem>)
+        eit.val     = ex.values<eitem>
+        if eit.name = "NAME" {
+            if eit.val = "RESALE" {
+                c.data<15> =   "G"
+            }{
+                if eit.val = "INDUSTRIAL PROD/MANUFACTURERS" {
+                    c.data<15> = "I"
+                }
+            }
+        }
+    }
+
+    return
+**************************************************************************
+parse.exposure.zone:
+    sub::ut.parse.json (it.val, ex.items, ex.values)
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    eitem.ct = dcount (ex.items,am)
+
+    if eitem.ct & !valid.ezones {
+        sub::ud.ava.ezones (valid.ezones)
+    }
+    for eitem = 1 to eitem.ct {
+        eit.name    = ex.items<eitem>
+        eit.val     = ex.values<eitem>
+        
+        if upcase(eit.name) = "NAME" {
+            locate eit.val in valid.ezones<2> setting val {
+                c.data<4>  =   valid.ezones<1,val>
+                c.data<3>  =   "US"
+            }
+        }
+    }
+    
+    return
+**************************************************************************
+initialize:
+***
+* Start up
+***
+    begin.date      = date()
+    begin.time      = int(time())
+    pgm.name        =   'UD.AVA.PARSE.NEWCUSTS'
+    skip.reason~~~
+    buffer.clear ()    
+    buffer (oconv(date(),"D4/"):"  ":oconv(time(),"MT"))
+
+* objects
+    setting = new (setting, "AVATAX.API.SETUP")
+
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        lic.or          = :: ("License", 0, 1)
+        ctrl.id         = :: ("AvaTaxOptions")
+        default.br      = :: ("DefaultBranch")
+        page.size       = :: ("PageSize",100)
+        retry.count     = :: ("RetryCount", 2)
+    }
+    manager =   new (file.manager)
+    with manager::open {
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            buffer ("Error opening UD.AVALOG.  ":vm:error.message)
+            goto finish
+        }
+    }    
+    
+*  Variables
+    * Use assign when you want to keep a passed in value, not to initialize it.
+    record.ids~~~
+    records~~~
+    valid.ezones~~~
+    sub::ud.ava.get.company.id (default.br,company.id)
+        
+    buffer ("PGM Name:  ":pgm.name)
+    
+*  Files
+
+    sub::ut.sec3 (93,ava.ok,'',no)
+
+* check for reasons to not do any processing
+    cases {
+
+    * the custom avalara api interface is not enabled.
+        case !enabled
+            skip.reason = "Avalara API customization is not enabled."
+    *  the Avalara add on is not licensed.
+        case !ava.ok & !lic.or
+            skip.reason = "Avalara is not licensed in this environment."
+    } 
+ return
+
+* checksum: 61900
+* last change: 10/11/2022 10:39:51am
+* last compile: 10/11/2022 10:39:51am

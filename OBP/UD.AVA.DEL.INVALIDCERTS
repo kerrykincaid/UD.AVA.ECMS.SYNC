@@ -1,0 +1,560 @@
+    subroutine ud.ava.del.invalidcerts (err.msg)
+ 
+* subroutine - ud.ava.del.invalidcerts
+
+*---------------------------program description---------------------------*
+*  Processes the Data records from the AVATAX portal using API, delete
+* certificates marked invalid, STOPPED in the portal.
+*
+*--------------------------parameter definition---------------------------*
+* err.msg -                                                         [out]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+    begin.date      = date()
+    begin.time      = time()
+
+    if not (phantom.proc) {
+        sub::window ("", "", 78, 21, 3, "", "ECMS Stopped/Invalid Cert Delete.")
+    }
+
+    initialize
+
+    phst.msg = "Processing PORTAL records..."
+    
+    fetch.portal.data
+    
+    proc.deletes
+
+    run.msg    =  "END:   " : oconv (date(), 'D4/'):"  ":oconv (time() , "MTHS")
+    log.msg
+    elapsed~~~
+    elapsed = elapsed.time (begin.date, begin.time)
+    run.msg    =  "Total Run Time : " : elapsed
+    log.msg
+    time_id = pgm.name:'.TIME'
+    sub::read.last.action (time.rec, time_id, '')
+    time.rec<-1>    =   run.type:vm:begin.date:vm:begin.time:vm:elapsed
+    sub::write.last.action (time.rec, time_id)
+
+***************************************************************************
+section cleanup:    *******************************************************
+***************************************************************************
+finish:
+
+    sub::write.last.action (output.buffer, pgm.name)
+    pgm.name = pgm.name:".":run.type
+    sub::write.last.action (output.buffer, pgm.name)
+    if phantom.proc {
+        phst.msg = "Build complete."
+        sub::send.message ("Phantom", user.id, phst.msg)
+        log.msg
+    }{
+        sub::write.last.action (output.buffer, pgm.name)
+        print "Press <Return> to continue."
+        inp a
+        sub::window.close
+    }
+    * Remove currently running flag from control file.
+    if run.pid {
+        * If run.pid is my PID, then set run.pid false for next ifnot.
+        run.pid = (run.pid # mypid)
+    }
+    ifnot run.pid {
+        unfetch ("", ctrlfile, runctrlrec, 2)
+    }
+    
+    sub::ut.tempfile.delete (temp.name, tempfile)
+    run.msg = "Tempfile deleted."
+    log.msg
+    
+    * Write new log entry.
+    avalogid    =   pgm.name:'~':begin.date:'~':begin.time
+    unfetch (output.buffer, avalogfile, avalogid)
+    
+    exit.sub
+
+***************************************************************************
+section logging: **********************************************************
+***************************************************************************
+log.msg: * log message to all locations.
+
+    if phst.msg {
+        buffer (phst.msg)
+        if phantom.proc {
+            write phst.msg on phstfile, pid$
+        }{
+            print phst.msg "L#70"
+        }
+        
+    }
+    if run.msg {
+        buffer (run.msg)
+        if not (phantom.proc) {
+            print run.msg "L#70"
+        }
+    }
+    phst.msg~~~
+    run.msg~~~
+
+    return
+***************************************************************************
+section startup routines: *************************************************
+***************************************************************************
+initialize:
+    phst.msg~~~
+    run.msg~~~
+    last.run.rec~~~
+    run.pid~
+    run.type~~~
+    pgm.name    =   "UD.AVA.DEL.INVALIDCERTS"
+    buffer.clear ()
+    buffer (oconv (date() , "D4/"))
+    buffer (oconv (begin.time, "MTHS"))
+
+* objects
+    
+    setting = new (setting, "AVATAX.ECMS.SETUP")
+    with setting::get {
+        enabled         = :: ("Enabled", 0, 1)
+        sv.gl.br        = :: ("DefaultBranch", "1000")
+        run.limit       = :: ("PartSyncRunLimit", 3600)
+        runctrlrec      = :: ("RunCtrlRec")
+    }
+    
+    manager =   new (file.manager)
+        
+    * Get my process id for tracking.
+    sub::unix.pid.get (mypid)
+    
+    * Run one at a time.  Do not let another Sync begin while one is running.
+    run.pid     =   fetch (ctrlfile, runctrlrec, 2)
+    
+    if run.pid {
+        * Check that the Process is still active.  This could result in a false positive.
+        * Better safe than sorry... If we track our own PID, it'll get cleaned up on exit.
+        sub::ut.pids.get (running.pids)
+        is.running = xlate.am (run.pid, running.pids)
+        if is.running & (run.pid # mypid) {
+            phst.msg = "Sync already running!  ":run.pid
+            send.message 'Phantom',user.id, phst.msg
+            log.msg
+            sleep 12
+            *  Exit immediately without writing last action record.  Keep previous entry.
+            exit.sub
+        }
+        * Not actually running... clean up the Ctrl Rec.
+        delete ctrlfile, runctrlrec
+    }
+    *  This process is running... write control record with PID.
+    unfetch (mypid,ctrlfile, runctrlrec, 2) 
+    
+    if !enabled {
+        run.msg = "Interface not enabled!" 
+        log.msg
+        finish
+    }
+
+* last run
+    * read last date and time of last sync.
+    sub::read.last.action (last.date, pgm.name,@false,1)
+    sub::read.last.action (last.time, pgm.name,0,2)
+    
+    if last.date & last.time {
+        last.date = iconv (last.date, "D4/")
+        last.time = iconv (last.time, "MTHS")
+    }
+    
+* variables    
+    rec.ct~
+    resp~~~
+    cmd~~~
+    cn~~~
+    del.cnt~
+    del.cert.cnt~
+    portal.cust.lst~~~
+    portal.cuid.lst~~~
+    portal.cert.lst~~~
+    pcn.cert.lst~~~
+    cus.pos~
+    pcn~~~
+    pcn.id~~~
+    
+* variables for api calls and caching.
+    gl.br~~~
+    compid~
+
+    run.msg = "Initialized  ":mypid
+    log.msg
+    run.msg = ""
+    log.msg
+    
+* files
+    prep.files   
+
+    last.run.rec<1> = oconv (date(), 'D4/')
+    last.run.rec<2> = oconv (time(), 'MTHS')
+    unfetch (last.run.rec, avaidfile, 'LAST.DEL')
+    
+  return
+***************************************************************************
+prep.files:
+    run.msg = "Prep files"
+    log.msg
+    
+* tempfile
+    **sub::ut.tempfile.create (temp.name, tempfile, "", , "", yes)
+    tempfileobj = new (temp.file)
+    temp.name, tempfile = tempfileobj::create
+
+    
+    lpath =  fileinfo (tempfile, 2)
+    run.msg = "Temporary file path:  ":lpath
+    log.msg
+    run.msg = " - Tempfile name:  ":temp.name
+    log.msg
+    
+
+* files
+    with manager::open {
+        run.msg = "Open ID file"
+        log.msg
+        avaidfile = :: ("UD.AVALARA")
+        if have.error {
+            run.msg = "Error opening UD.AVALARA.  ":vm:err.msg
+            log.msg
+            goto finish
+        }    
+        
+        run.msg = "Open log file"
+        log.msg
+        avalogfile = :: ("UD.AVALOG")
+        if have.error {
+            run.msg = "Error opening UD.AVALOG.  ":vm:err.msg
+            log.msg
+            goto finish
+        }
+        
+    }
+    run.msg = "Files opened"
+    log.msg
+
+  return
+***************************************************************************
+section delete processing: ************************************************
+***************************************************************************
+*******************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+proc.deletes:    
+
+    phst.msg    =   oconv (time(), "MTHS"):" Process Deletes"
+    log.msg
+    sv.del.cert.cnt~~~
+    sv.del.cnt~~~
+    proc_custs~~~
+    
+    pcn  =   each.am (portal.cust.lst, del.cust.ptr) {
+        
+        * Loop through remaining certificates of customer.
+        run.msg = "Evaluate customer ":pcn:" for deletion."
+        log.msg
+        
+        cus.rec = fetch (cusfile, pcn)
+        get.api.compid
+        
+        * Put customers exemption ids in new variable to allow cleaning up original.
+        pcn.cert.lst = portal.cert.lst<del.cust.ptr>
+        pen = each.vm (pcn.cert.lst<1>, del.cert.ptr) {
+            valid.cert~~
+            unexpired.cert~~
+            portal_rec_id   = pcn:"~":pen
+            c.cert.region~~~
+            c.cert.num~~~
+            c.cert.city~~~
+            exempt.reason~~~
+            exp.date~
+            
+            *cert.id = fetch (tempfile, portal_rec_id, 1, 1)
+            cert.id = field (pen, "~", 2)
+retry.certid:   *** If we find a Cert ID in a later step, retry the delete.            
+            if cert.id {
+                run.msg = " Cert id ":cert.id:" is still listed for customer ":pcn:"."
+                log.msg
+                * We are only processing invalid certificate exemptions.  No need to verify.
+                
+                
+                delete.cert
+                
+                if cert.deleted {
+                    del.cert.cnt++
+                }
+                * Do not delete UD.AVALARA record, since ID won't ever match.
+            }{
+                *  Cannot delete without CertID.  If we can't get it from portal download, skip.
+                cert.id = fetch (tempfile, portal_rec_id, 1, 1)
+                ifnot cert.id {
+                    run.msg = " Exemption ":portal_rec_id:" is still listed, but has no Cert ID."
+                    log.msg
+                }{
+                    goto retry.certid
+                }
+            }
+            run.msg = " Removing ":portal_rec_id:" from customer's cert list."
+            log.msg
+            
+            delcert = xlate.vm (pen, portal.cert.lst<del.cust.ptr>)
+            if delcert {
+                portal.cert.lst = delete (portal.cert.lst, del.cust.ptr, del.cert.ptr)
+            }{
+                run.msg = " cert not found in cert list:  ":portal_rec_id
+                log.msg
+            }
+        }
+        
+        *  Once CERTS processed, Check customer
+        *list certs linked to customer.  If @recordset = 0, delete customer.  Skip otherwise.
+        ifalpha (pcn) {
+            run.msg = " Non-numeric customer id.  Skipping customer delete checking."
+        }
+        next.ifalpha (pcn)
+        
+        c.cert.ct = vms (cus.rec<33>)
+        ifnotzero       c.cert.ct {
+            run.msg = " Possible exemptions.  No customer delete."
+            log.msg
+        }
+        next.ifnotzero  c.cert.ct 
+        
+        delete.portal.customer
+        del.cnt++
+
+        * Status monitor.
+        if (sv.del.cert.cnt # del.cert.cnt) | (sv.del.cnt # del.cnt) {
+            if (mod (del.cert.cnt, 10) = 0) | (mod (del.cnt, 10) = 0) {
+                phst.msg = del.cert.cnt:" Certs, and ":del.cnt : " Customers deleted."
+                log.msg
+            }
+            sv.del.cert.cnt =   del.cert.cnt
+            sv.del.cnt      =   del.cnt
+        }
+        sub::write.last.action (output.buffer, pgm.name)
+        check.time.limit
+    }
+
+    return
+***************************************************************************
+delete.cert:
+    cert.deleted~
+    
+    if cert.id {
+        ifnotalpha pcn  {
+            unlink.json = '{"customers":["':pcn:'"]}'
+            sub::ud.ava.unlink.custs.certs (compid,cert.id,unlink.json,resp,err.msg)
+            * run.msg = lower(resp)
+            * log.msg
+            * run.msg = lower(err.msg)
+            * log.msg
+            
+            linked.ct~
+            sub::ut.parse.json (resp, items, values)
+            if items<1>  = "@recordsetCount" {
+                linked.ct =   values<1>
+            }{
+                if (items<1>[1,5] = "error") | (err.msg){
+                    run.msg = "    Unable to unlink customer from cert.  Cannot delete."
+                    log.msg
+                    goto skip.delete
+                }
+            }
+            
+            ifnum linked.ct {
+                ifnotzero linked.ct {
+                    if linked.ct = 1 {
+                        * Parse value array.
+                        sub::ut.parse.json (values<2>, value.object)
+                        * Parse object inside array.
+                        sub::ut.parse.json (value.object<1>, obj.items, obj.values) 
+                        linked.cust.id = xlate.am ('id',obj.items,obj.values)
+                        if linked.cust.id = pcn {
+                            run.msg = "   Error.  Certifciate ":cert.id:" still linked to this customer: ":linked.cust.id
+                            log.msg 
+                        }{
+                            run.msg = "   Error.  Certificate ":cert.id:" linked to another customer: ":linked.cust.id
+                        }
+                    }{
+                        run.msg = "    Error.  Certificate ":cert.id:" linked to multiple customers."
+                        log.msg
+                        goto skip.delete
+                    }
+                }
+            }
+        }
+        retry.count~
+retry.delete:
+        items~~~
+        sub::ud.ava.deletecertificate (compid,cert.id,resp,err.msg)
+        run.msg = lower(resp)
+        log.msg
+        run.msg = lower(err.msg)
+        log.msg
+        
+        if err.msg {
+            if trim (err.msg) = "Request failure: Network error" & !retry.count{
+                * Temporary network issue... retry.
+                retry.count++
+                run.msg = "   Retry delete once."
+                log.msg
+                goto retry.delete
+            }
+            run.msg = "   Error message deleting certificate: ":cert.id
+            log.msg 
+            run.msg = "  ":err.msg
+            log.msg
+            goto skip.delete
+        }
+        sub::ut.parse.json (resp, items, values)
+        if items {
+            run.msg = "    There was an error deleting the certificate."
+        }{
+            run.msg = "  Cert ":cert.id:" deleted."
+            log.msg
+            cert.deleted~~
+        }
+        
+    }
+skip.delete:    
+    
+  return
+***************************************************************************
+delete.portal.customer:
+    cust.deleted~
+    * Customer was marked for deletion after all portal certificates are removed.
+    * Evaluation of customer deletion is repeated after each cert deletion.
+    run.msg = "   ":pcn:" to be deleted from the portal."
+    log.msg
+    sub::ud.ava.deletecustomer (compid,pcn,resp,err.msg)
+    run.msg = lower(resp)
+    log.msg 
+    run.msg = lower(err.msg)
+    log.msg
+    sub::ut.parse.json (resp, items, values)
+    if err.msg | items {
+        run.msg = "   There was an error deleting the customer."
+        log.msg
+    }{
+        run.msg = "   Customer ":pcn:" deleted."
+        log.msg
+        cust.deleted~~
+    }
+    
+  return
+***************************************************************************
+fetch.portal.data:
+
+    phst.msg = "Get Portal Certificates - ud.ava.port.certs"
+    log.msg
+    sub::ud.ava.port.certs (temp.name)
+    load.portal.data
+    phst.msg =   rec.ct:" portal customer / certificate combinations."
+    log.msg
+    
+  return
+***************************************************************************
+load.portal.data:
+    select tempfile to imports
+
+    *selecte to imports
+    run.msg = "Starting"
+    log.msg
+    ** loop
+    prec.id = each.next (imports)
+        pcn~~~
+        pen~~~
+        pen.cid~~~
+
+        portal.rec = fetch (tempfile, prec.id)
+        next.ifnot portal.rec
+
+        * Portal Customer Number.
+        pcn = field (prec.id,'~',1)
+        * Portal Exemption Number (with Region)
+        pen = field (prec.id,'~',2)
+        * Portal Cert ID
+        pen.cid = field (prec.id,'~',3)
+        is.invalid =    index (pen, "!INVALID!",1)
+        next.ifnot is.invalid
+        
+        * Store in customer list.  Keep track of customers downloaded from portal.
+        locate pcn in portal.cust.lst setting pos }{
+
+            * INSERT customer number, customer portal ID, and spot for cert vm list.
+            portal.cust.lst = insert (portal.cust.lst,pos; pcn)
+            portal.cuid.lst = insert (portal.cuid.lst,pos; portal.rec<2>)
+            portal.cert.lst = insert (portal.cert.lst,pos; '')
+            
+        }
+        * Store cert id (Region:ExemptNumber~cert.id) in parallel variable to customer list.
+        * Keep track of a customers certificate downloaded from portal.
+        **portal.cert.lst<pos,-1> = pen
+        if pen.cid {
+            pen = pen:"~":pen.cid
+        }
+        * Once the position is insert for the customer (AM) then here I can just add to the VM list of Exemption IDs.
+        
+        portal.cert.lst<pos> = add.vm (pen)
+        
+        * Count number of portal combination records for status monitoring.
+        rec.ct++
+        * Status monitor.
+        if mod (rec.ct, 3000) = 0 {
+            phst.msg = rec.ct : " portal record combinations read."
+            log.msg
+        }
+    }
+    return
+***************************************************************************
+get.api.compid:
+    ifnotnull gl.br {
+        sv.gl.br       =  gl.br
+    }
+    * Use the customer's home branch to determine company id.
+    gl.br          =  cus.rec<53>
+
+    ifnot gl.br {
+        * Use the default br if customer home.br is blank.
+        gl.br       =  sv.gl.br
+    }
+    
+    * Only call out for the compid if we don't have one OR gl.br has changed.
+
+    if (!(compid)) | (gl.br # sv.gl.br) {
+
+        sub::ud.ava.get.company.id (gl.br, compid)
+    }
+
+  return
+***************************************************************************
+check.time.limit:
+    if run.limit {
+        run.time = elapsed.time (begin.date, begin.time)
+        if run.time > run.limit {
+            run.msg =   "!!!! TIME LIMIT EXCEEDED !!!!"
+            log.msg 
+            run.msg =   "Shutting down."
+            log.msg
+            return to finish
+        }
+    }
+
+return
+***************************************************************************
+prep.json:
+    change (json.out, am, char(10))
+    change (json.out, vm, char(10))
+return    
+***************************************************************************
+
+* checksum: 7707
+* last change: 10/11/2022 10:39:37am
+* last compile: 10/11/2022 10:39:37am

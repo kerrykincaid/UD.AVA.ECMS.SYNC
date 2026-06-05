@@ -1,0 +1,493 @@
+    SUBROUTINE UD.AVA.ECMS.BLD.REC  (RECORD.ID, ECMS.RECORD)
+** Version# 0.0001[87] - 12/29/25 - 05:20pm  - KK05718 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.ECMS.BLD.REC at 05:20pm 12/29/2025 by KK*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.ECMS.BLD.REC       *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 28851
+* last change: 12/23/2025 06:48:49pm
+* last compile: 10/11/2022 10:39:39am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+* subroutine - ud.ava.ecms.sync
+
+*---------------------------program description---------------------------*
+*  Build the ECMS record for comparison.
+*--------------------------parameter definition---------------------------*
+* record.id -                                                     [in] 
+* ecms.record -                                                   [in/out]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+ 
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INITIALIZE
+    ECMS.DATA = ECMS.RECORD
+    
+    PHST.MSG = "Processing export records..."
+* All the magic happens here.    
+    GOSUB PROC.ONE
+    
+    ECMS.RECORD =   ECMS.DATA
+
+***************************************************************************
+* SECTION CLEANUP:    *******************************************************
+***************************************************************************
+FINISH:
+
+    ADD.OUTPUT.TEXT = ("Build complete.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+***************************************************************************
+* SECTION STARTUP ROUTINES: *************************************************
+***************************************************************************
+INITIALIZE:
+    BEGIN.DATE      = DATE()
+    BEGIN.TIME      = INT(TIME())
+    PGM.NAME        =   "UD.AVA.ECMS.BLD.REC"
+
+* objects
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = ("DATE: " : OCONV(DATE(),"D4/")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = ("TIME: " : OCONV(BEGIN.TIME,"MTHS")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.ECMS.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, SV.GL.BR, "DefaultBranch", "1000" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULTEFFECT, "var.eff.date", "-1/01/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, DEFAULTEXPIRE, "var.exp.date", "MO/31/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, NEW.BATCH.SIZE, "NewCustBatchSize", 10 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TROUBLESHOOTING, "TroubleShooting", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        * Record field tracking to determine if changes are to customer data, or certificate data.    
+        REC.FIELDS = ''
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CustomerFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<1> = TEMP.VAR.1
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, TEMP.VAR.1, "CertificateFields" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        REC.FIELDS<2> = TEMP.VAR.1
+        REC.FIELDS = CHANGE(REC.FIELDS, ',', @VM)
+*   END.WITH
+    IF NOT( ENABLED ) THEN 
+        ADD.OUTPUT.TEXT = ("Interface not enabled!") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+
+    TEMP.HANDLE = "" ; UD.MTH.FILE.MANAGER.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; MANAGER = TEMP.HANDLE ; * new FILE.MANAGER object
+    
+* variables    
+    CN = ''
+    ECMS.DATA = ''
+    SV.COMP.CODE = @FALSE
+    SV.HBR = @FALSE
+    BR.COMP.XREF = ''
+    
+* valid states.
+    READ VST FROM CTRLFILE, "VALID.US.STATES" ELSE 
+        VST = ""
+    END 
+* pricing type to business type mapping variables.
+    READ XREF.TYPES FROM CTRLFILE, "UD.AVA.XREF.TYPES" ELSE 
+        XREF.TYPES = ''
+    END 
+    BUS.TYPE = ''
+    PRC.TYPE = ''
+    
+* variables for api calls and caching.
+    GL.BR = ''
+    COMPID = @FALSE
+
+    ADD.OUTPUT.TEXT = ("Initialized") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+* files
+    GOSUB PREP.FILES
+    
+  RETURN
+
+***************************************************************************
+PREP.FILES:
+
+* files
+*   WITH MANAGER::OPEN
+        
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVAIDFILE, "", "UD.AVALARA" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            GOTO FINISH
+        END 
+        
+        CALL.TEMP.OBJECT.HANDLE = MANAGER ; UD.MTH.FILE.MANAGER.OPEN CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVALOGFILE, "", "UD.AVALOG" ; MANAGER = CALL.TEMP.OBJECT.HANDLE
+        IF (ERROR.MESSAGE <> '') THEN 
+            ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            GOTO FINISH
+        END 
+        
+*   END.WITH
+
+  RETURN
+
+***************************************************************************
+* SECTION RECORD PROCESSING: ************************************************
+***************************************************************************
+PROC.ONE:
+* setup certificate constants.  keep here with certificate processing in
+* the event these become more dynamic values.
+    EXEMPT.NUM.TYPE         =  "TIN"
+
+* get customer data.
+    CN  =   FIELD(RECORD.ID,'~',1)
+    ADD.OUTPUT.TEXT = ("cn: ":CN) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    REC.REGION = FIELD(RECORD.ID,'~',2)[1,2]
+    REC.NUMBER = TRIM (FIELD(RECORD.ID,'~',2)[3,99])
+    
+    READ CUS.REC FROM CUSFILE, (CN) ELSE CUS.REC = ''
+    IF CUS.REC = '' THEN 
+        ADD.OUTPUT.TEXT = ("Customer record null.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    IF CUS.REC = '' THEN RETURN
+    
+    HOME.BR                 =  CUS.REC<53>
+    ADD.OUTPUT.TEXT = (("Home Branch:":SPACE(2)):HOME.BR) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    IF (SV.HBR = HOME.BR) AND (SV.COMP.CODE) THEN 
+        COMP.CODE = SV.COMP.CODE
+    END ELSE 
+        LOCATE HOME.BR IN BR.COMP.XREF<1> SETTING POS ELSE 
+            BR.COMP.XREF = INSERT (BR.COMP.XREF, 1, POS;HOME.BR)
+            UD.AVA.GET.COMPANY.ID HOME.BR, COMP.CODE
+            BR.COMP.XREF = INSERT (BR.COMP.XREF, 2, POS;COMP.CODE)
+        END 
+        COMP.CODE = BR.COMP.XREF<2, POS>
+    END 
+    SV.HBR                  =  HOME.BR
+    SV.COMP.CODE            =  COMP.CODE
+    IF NOT (COMP.CODE) THEN 
+        COMP.CODE               =  "851125"
+    END 
+    CERT.TYPE               =  "BLANKET"
+    INV.PO.NUM              =  ""
+
+* pricing type to business type mapping.
+* first pricing type only.
+    PRC.TYPE                =  CUS.REC<35, 1>
+    IF NOT (PRC.TYPE) THEN 
+
+* class for fallback.
+        PRC.TYPE             =  CUS.REC<13>
+    END 
+    BUS.TYPE                =  ""
+    BUS.TYPE.DESC           =  ""
+    LOCATE PRC.TYPE IN XREF.TYPES<1> SETTING TPOS THEN 
+        BUS.TYPE             =  XREF.TYPES<2, TPOS>
+    END ELSE 
+        BUS.TYPE             =  "20"
+    END 
+
+    IF BUS.TYPE = "20" THEN 
+        IF PRC.TYPE THEN 
+            BUS.TYPE.DESC     =  PRC.TYPE
+        END ELSE 
+            BUS.TYPE.DESC     =  "Unknown"
+        END 
+    END 
+
+* convert double quotes to apostrophe to avoid data errors.
+    CUS.NAME                =  CONVERT (CHAR (34) , CHAR (39) , TRIM (CUS.REC<1>))
+    CUS.ADDR1               =  CONVERT (CHAR (34) , CHAR (39) , TRIM (CUS.REC<2, 1>))
+    CUS.ADDR2               =  CONVERT (CHAR (34) , CHAR (39) , TRIM (CUS.REC<2, 2>))
+    CUS.ADDR3               =  CONVERT (CHAR (34) , CHAR (39) , TRIM (CUS.REC<2, 3>))
+    CUS.CITY                =  TRIM (CUS.REC<3>)
+    CUS.REGION              =  TRIM (CUS.REC<4>)
+    CUS.POSTAL              =  TRIM (CUS.REC<5>)
+
+* bad data in country attribute of customer record.  look up country
+* in zip file.  if blank, assume us.
+*cus.country             =  cus.rec<6>
+*if not(cus.country) then cus.country = "us"
+    IF CUS.POSTAL = "." THEN 
+        RETURN
+    END 
+    POSTAL.LEN  = LEN (CUS.POSTAL)
+
+    BEGIN CASE 
+
+        CASE POSTAL.LEN = 7
+            POSTAL.LKUP = CUS.POSTAL [1, 7]
+
+        CASE POSTAL.LEN = 6 AND CUS.POSTAL [6, 1] = "."
+            POSTAL.LKUP = CUS.POSTAL [1, 6]
+
+        CASE OTHERWISE
+            POSTAL.LKUP = CUS.POSTAL [1, 5]
+
+    END CASE 
+
+    READV CUS.COUNTRY FROM ZIPFILE, POSTAL.LKUP, 5 ELSE 
+        CUS.COUNTRY = "US"
+    END 
+
+    IF NOT (CUS.COUNTRY) THEN 
+        CUS.COUNTRY = "US"
+    END 
+
+* do not skip non-us customers.  they can have us exemptions!!!
+* if cus.country ne 'us' then goto skipit
+
+    C.CERT.REGS =   CUS.REC<33>
+    C.CERT.NUMS =   CUS.REC<34>
+    C.CERT.RSNS =   CUS.REC<105>
+    CERT.NO = @FALSE
+    
+    C.CERT.REGS.VM.COUNT = DCOUNT((C.CERT.REGS), @VM) ; FOR CUR.REG.PTR = 1 TO (C.CERT.REGS.VM.COUNT) ; CUR.REG = (C.CERT.REGS)<1, (CUR.REG.PTR)> 
+        IF (REC.REGION = CUR.REG) THEN 
+            IF C.CERT.NUMS<1,CUR.REG.PTR> = REC.NUMBER THEN 
+                CERT.NO = CUR.REG.PTR
+                EXIT
+            END 
+        END 
+    NEXT CUR.REG.PTR 
+    IF NOT( CERT.NO ) THEN 
+        ADD.OUTPUT.TEXT = (" No cert number.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    IF NOT( CERT.NO ) THEN RETURN
+    
+*cert effective date
+    CEFD = ''
+    CERT.EFF.DATE = ''
+
+*ecms and avalara cert ids.  unique for each cert.
+    AVA.CERT.ID = ''
+    AVA.CUST.ID = ''
+
+*cert state.  must be valid or we don't send it.
+    CERT.REGION          =  REC.REGION
+    CERT.NUMBER          =  REC.NUMBER
+    EXEMPT.REASON        =  CUS.REC<105, CERT.NO> [1, 1]
+
+* ids assigned to record before calling subroutine.
+    RECID_CERTID = ''
+    IF INDEX (RECORD.ID, '~', 2) THEN 
+        RECID_CERTID = FIELD (RECORD.ID,'~',3)
+        AVAID_ID = FIELD (RECORD.ID, '~',1):"~":FIELD (RECORD.ID,'~',2)
+    END ELSE 
+        AVAID_ID = RECORD.ID
+    END 
+    AVA.CERT.ID          =  ECMS.DATA<1>
+    IF AVA.CERT.ID # RECID_CERTID THEN 
+        ADD.OUTPUT.TEXT = (("ID Mismatch!":SPACE(2):"Record.ID: "):RECID_CERTID:(SPACE(2):"Ava.Cert.ID: "):AVA.CERT.ID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RECORD.ID = @FALSE
+        RETURN TO FINISH
+    END 
+    
+
+* assume certs are us certs.  customer can be foreign with us exemption.
+*ecms.data<3>         =  cus.country
+    ECMS.DATA<3>         =  "US"
+
+    ECMS.DATA<4>         =  CERT.REGION
+
+    ECMS.DATA<5>         =  CERT.NUMBER
+    ECMS.DATA<6>         =  EXEMPT.NUM.TYPE
+
+* read cert effective date from avalara_ID.
+    READV CEFD FROM AVAIDFILE, (AVAID_ID), (2) ELSE CEFD = ''
+    IF CEFD = '' THEN 
+        REALDATE CEFD, DEFAULTEFFECT
+        WRITEV (CEFD) ON AVAIDFILE, (AVAID_ID), (2)
+    END 
+    * For portal comparison we need a YYYY-MM-DD format.
+    *ecms.data<7>         =  oconv (cefd, "D4/")
+    ECMS.DATA<7>         =  OCONV (CEFD, "D-YMD[4,2,2]")
+
+*       process cert expiration date.  set for export if blank.
+    *cexd                 =  cus.rec<172, cert.no>
+    * Expiring all certificates
+    EXP.DATE   =  20821
+    EXP.DATE  +=  0
+    SV.CEXD              =  CEXD
+    IF INDEX (CEXD, '/',1) THEN 
+        CEXD    =   ICONV (CEXD,'D4/')
+    END 
+    IF NOT( (CEXD) ) THEN 
+        READ CEXD FROM AVAIDFILE, (AVAID_ID) ELSE CEXD = ''
+        IF NOT( (CEXD) ) THEN 
+            REALDATE NEWEXPIRE, DEFAULTEXPIRE
+            IF (NEWEXPIRE - DATE()) < 30 THEN 
+                * If within 30 days, extend date by 1 year.
+                NEXTEXPIRE = FIELD(DEFAULTEXPIRE,'/',1):'/':FIELD(DEFAULTEXPIRE,'/',2):'/+1'
+                REALDATE NEWEXPIRE, NEXTEXPIRE
+            END 
+            CEXD = NEWEXPIRE
+        END 
+    END 
+    IF NOT( (SV.CEXD) ) THEN 
+        READVU CEXD.TEMP.RECORD FROM CUSFILE, (CN), (172) THEN CEXD.TEMP.RECORD<1,CERT.NO> = (CEXD) ; WRITEV CEXD.TEMP.RECORD ON CUSFILE, (CN), (172) ELSE CEXD.TEMP.RECORD = '' ; CEXD.TEMP.RECORD<1,(CERT.NO)> = (CEXD) ; WRITEV CEXD.TEMP.RECORD ON CUSFILE, (CN), (172)
+    END 
+    * Verify recorded expiration date for portal.  Expiration required.  Recorded to keep one on record. 
+    READ UDAVA_CEXD FROM AVAIDFILE, (AVAID_ID) ELSE UDAVA_CEXD = ''
+    IF ( NOT( UDAVA_CEXD ) ) OR (UDAVA_CEXD NE CEXD) THEN 
+        WRITEV (CEXD) ON AVAIDFILE, (AVAID_ID), (3)
+    END 
+    
+    * For portal comparison we need a YYYY-MM-DD format.
+    *ecms.data<8>         =  oconv (cexd, "D4/")
+    ECMS.DATA<8>         =  OCONV (CEXD, "D-YMD[4,2,2]")
+
+* not skipping this record.
+
+    CERT.STATUS          =  "Active"
+    ECMS.DATA<9>         =  COMP.CODE
+    ECMS.DATA<10>        =  CN
+    ECMS.DATA<11>        =  CERT.TYPE
+    ECMS.DATA<12>        =  INV.PO.NUM
+    ECMS.DATA<13>        =  BUS.TYPE
+    ECMS.DATA<14>        =  BUS.TYPE.DESC
+    ECMS.DATA<15>        =  EXEMPT.REASON
+    IF EXEMPT.REASON = "L" THEN 
+        EXEMPT.REASON.DESC = CUS.REC<105, CERT.NO> [3, 10]
+    END ELSE 
+        EXEMPT.REASON.DESC = ""
+    END 
+    ECMS.DATA<16>        =  EXEMPT.REASON.DESC
+    ECMS.DATA<17>        =  CUS.NAME
+    ECMS.DATA<18>        =  CUS.ADDR1
+    ECMS.DATA<19>        =  CUS.ADDR2
+    ECMS.DATA<20>        =  CUS.ADDR3
+    ECMS.DATA<21>        =  CUS.CITY
+    ECMS.DATA<22>        =  CUS.REGION
+    ECMS.DATA<23>        =  CUS.POSTAL
+    ECMS.DATA<24>        =  CUS.COUNTRY
+    ECMS.DATA<25>        =  CERT.STATUS
+
+    ECMS.DATA<26>        =  "Accepted"
+    
+    TMP.BUFFER.TXT = ''
+    ECMS.DATA.AM.COUNT = DCOUNT((ECMS.DATA), @AM) ; FOR EDATA.CTR = 1 TO (ECMS.DATA.AM.COUNT) 
+        IF TMP.BUFFER.TXT = '' THEN TMP.BUFFER.TXT = (EDATA.CTR:(":":SPACE(2)):ECMS.DATA<EDATA.CTR>) ELSE TMP.BUFFER.TXT := @VM : (EDATA.CTR:(":":SPACE(2)):ECMS.DATA<EDATA.CTR>)
+    NEXT EDATA.CTR 
+    IF TMP.BUFFER.TXT <> '' THEN 
+        ADD.OUTPUT.TEXT = (TMP.BUFFER.TXT) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    END 
+    
+    RETURN
+
+***************************************************************************
+
+* checksum: 28851
+* last change: 12/23/2025 06:48:49pm
+* last compile: 10/11/2022 10:39:39am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.ECMS.BLD.REC"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,INITIALIZE,PREP.FILES,PROC.ONE,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 6 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,INITIALIZE,PREP.FILES,PROC.ONE,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.ECMS.BLD.REC"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.ECMS.BLD.REC"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.ECMS.BLD.REC"
+ 
+    RETURN

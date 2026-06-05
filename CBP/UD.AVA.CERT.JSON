@@ -1,0 +1,612 @@
+    SUBROUTINE UD.AVA.CERT.JSON  (JSON, CN, CERT.ID)
+** Version# 0.0001[91] - 12/29/25 - 05:20pm  - KK05718 - ECLIPSE
+******************************** IMPORTANT *******************************
+* Created from Object OBP UD.AVA.CERT.JSON at 05:20pm 12/29/2025 by KK057*
+* using UD.COMPILE 8.2.5                                                 *
+*                                                                        *
+* Do not edit this program directly!  Edit OBP UD.AVA.CERT.JSON          *
+* and compile using UD.COMPILE.                                          *
+* Enter 'COMPILE HELP WIN' from TCL for help.                            *
+******************************** IMPORTANT *******************************
+ 
+* checksum: 23704
+* last change: 12/23/2025 06:42:12pm
+* last compile: 10/11/2022 10:39:34am
+* compiler version: 8.2.5
+* compiler date: 07/01/2023
+* subroutine - ud.ava.cert.json
+
+*---------------------------program description---------------------------*
+* builds json document required to update a certificate via the Avalara
+* AvaTax API. 
+*--------------------------parameter definition---------------------------*
+* json - json record for new customer, customer, or Cert.          [out]
+* cn   - Customer number to process.                                [in]
+* cert.id - avatax cert.id being processed or RegionExemption num.  [in]
+*----------------------------common variables-----------------------------*
+***************************************************************************
+
+    GOSUB LOAD.OBJECT.SUBROUTINE.VARIABLES
+ 
+    GOSUB INIT
+    GOSUB PREP.FILES
+    
+*** Lookup cert id in UD.AVALARA file.
+***   Else, get cert data from AVATAX API.  Match data to CN and Exempt 
+***   Cert data on customer record.  
+***      Else, No JSON.  Return.
+***   Build JSON from cert data in Eclipse.
+*** From @ID of UD.AVALARA record, match to CN.
+*** If matched, then get state and exemption number from @ID. 
+***   Else, No JSON.  
+*** If matched, then build JSON from cert data in Eclipse.  
+***   Else, no JSON.    
+    
+    GOSUB PROC.CERT
+    JSON = CERTREC.JSON
+    
+FINISH:
+    WRITE.LAST.ACTION OUTPUT.BUFFER, PGM.NAME
+    * Write new log entry.
+    AVALOGID    =   PGM.NAME:'~':BEGIN.DATE:'~':BEGIN.TIME
+    WRITE (OUTPUT.BUFFER) ON AVALOGFILE, (AVALOGID)
+    
+    UT.TEMPFILE.DELETE TEMP.NAME, TEMPFILE
+    GOSUB EXIT.TO.CALLING.PROGRAM
+
+***************************************************************************
+***************************************************************************
+INIT: * INITIALIZE
+    BEGIN.DATE = DATE()
+    BEGIN.TIME = INT(TIME())
+    OUTPUT.BUFFER = '' ; OUTPUT.BUFFER.COUNT = 0
+    ADD.OUTPUT.TEXT = (OCONV(DATE(),"D4/"):SPACE(2):OCONV(TIME(),"MT")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    PGM.NAME    =   "UD.AVA.CERT.JSON"
+    
+* objects
+    TEMP.HANDLE = "" ; PASS.INITIALIZE.VALUE = "":LOWER("AVATAX.ECMS.SETUP") ; TEMP.HANDLE<5> = LOWER(PASS.INITIALIZE.VALUE) ; UD.MTH.SETTING.NEW TEMP.HANDLE, ERROR.MESSAGE, REGISTRY.SOURCE.ID ; SETTING = TEMP.HANDLE ; * new SETTING object
+*   WITH SETTING::GET
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, ENABLED, "Enabled", 0, 1 ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, VAR.EFF.DATE, "var.eff.date", "MO/DA/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, VAR.EXP.DATE, "var.exp.days", "MO/31/YR" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+        CALL.TEMP.OBJECT.HANDLE = SETTING ; UD.MTH.SETTING.GET CALL.TEMP.OBJECT.HANDLE, ERROR.MESSAGE, AVADATEFORMAT, "AvalaraDateFormat", "D-YMD[Z4,2,2]" ; SETTING = CALL.TEMP.OBJECT.HANDLE
+*   END.WITH
+    IF NOT( ENABLED ) THEN 
+        ADD.OUTPUT.TEXT = ("Interface not enabled!") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOSUB FINISH
+    END 
+    
+    REALDATE DEF.EFF.DATE, VAR.EFF.DATE
+    IF NOT( DEF.EFF.DATE ) THEN 
+        ADD.OUTPUT.TEXT = ((SPACE(2):("Bad Default Effective Date!":SPACE(2)))) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        DEF.EFF.DATE = DATE()
+    END 
+    
+* customer record
+    READ CUS.REC FROM CUSFILE,CN ELSE 
+        ADD.OUTPUT.TEXT = (("Unable to read customer record.":SPACE(2):"CN: "):CN) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN TO FINISH
+    END 
+    
+* variables    
+    PHST.MSG = ''
+    RUN.MSG = ''
+    RESP = ''
+    C.CERT.CNT = @FALSE
+    ENVELP      =  CHAR (34)
+    
+* New customer and cert JSON.
+    CERTREC.JSON = ''
+    NRJ.LEVEL   =  0
+    CUR.CUST = ''
+
+    CERT.HEAD = ''
+* build item portion of cert certrec.json.
+    CERT.HEAD<1>      =  "id"
+    CERT.HEAD<2>      =  "signedDate"
+    CERT.HEAD<3>      =  "expirationDate"
+    CERT.HEAD<4>      =  "filename"
+    CERT.HEAD<5>      =  "valid"
+    CERT.HEAD<6>      =  "exemptionNumber"
+    CERT.HEAD<7>      =  "exemptionReason"
+    CERT.HEAD<7, 2>   =  "name"
+    CERT.HEAD<8>      =  "taxNumberType"
+    CERT.HEAD<9>      =  "businessNumberType"
+    CERT.HEAD<10>     =  "exposureZone"
+    CERT.HEAD<10, 2>  =  "name"    
+    
+    CEFD = ''
+    CEXD = ''
+    BUS.NUM.TYPE = ''
+
+* pricing type to business type mapping variables.
+    READ XREF.TYPES FROM CTRLFILE, "UD.AVA.XREF.TYPES" ELSE 
+        XREF.TYPES = ""
+    END 
+    READ AVA.BUS.TYPES FROM CTRLFILE, ('UD.AVALARA.BUS.TYPE') ELSE AVA.BUS.TYPES = ''
+    BUS.NUM.TYPE = ''
+    PRC.TYPE    =  CUS.REC<35,1>
+    
+    LOCATE PRC.TYPE IN XREF.TYPES<1> SETTING TYPE.POS ELSE 
+        TYPE.POS = ''
+    END 
+    BUS.TYPE    =   XREF.TYPES<2,TYPE.POS>
+    IF NOT( BUS.TYPE ) THEN 
+        *bus.num.type    =   trim (prc.type)
+        BUS.NUM.TYPE    =   "Other"
+    END ELSE 
+        LOCATE BUS.TYPE IN (AVA.BUS.TYPES<1>)<1> SETTING XLATE.PTR THEN TYPE.NAME = AVA.BUS.TYPES<2,XLATE.PTR> ELSE TYPE.NAME = ''
+        IF TYPE.NAME THEN 
+            TYPE.NAME = CHANGE (TYPE.NAME, '-', ' ')
+            TYPE.NAME = TRIM (TYPE.NAME)
+            BUS.NUM.TYPE    =   TYPE.NAME
+        END 
+    END 
+
+* variables for api calls and caching.
+    GL.BR          =  CUS.REC<53>
+    IF NOT( GL.BR ) THEN 
+        GL.BR = "1000"
+    END 
+    UD.AVA.GET.COMPANY.ID GL.BR, COMP.ID
+    UD.AVA.EZONES EXP.ZONES
+    E.REG       =  EXP.ZONES<1>
+    E.NAMES     =  EXP.ZONES<2>
+    EZONE.CT =  DCOUNT (E.REG, VM)
+
+ RETURN
+
+***************************************************************************
+PREP.FILES:
+**          read vst from statfile,'valid.us.states' else vst = ''
+    READ VST FROM CTRLFILE, "VALID.US.STATES" ELSE 
+        VST = ""
+    END 
+
+    UT.OPEN.FILE "UD.AVALARA", AVAIFILE, ERROR.MESSAGE, YES
+    IF (ERROR.MESSAGE <> '') THEN 
+        ADD.OUTPUT.TEXT = ("Unable to open UD.AVALARA.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO FINISH
+    END 
+    
+    UT.OPEN.FILE "UD.AVALOG", AVALOGFILE, ERROR.MESSAGE, YES
+    IF (ERROR.MESSAGE <> '') THEN 
+        ADD.OUTPUT.TEXT = (("Error opening UD.AVALOG.":SPACE(2)):VM:ERROR.MESSAGE) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        GOTO FINISH
+    END 
+
+ RETURN
+***************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+PROC.CERT:
+    FOUND.CERT = @FALSE
+    EXEMPT.SEARCH = @FALSE
+    CERT.REG = ''
+    CERT.NUM = ''
+    IF NOT(NUM( CERT.ID )) THEN 
+        EXEMPT.SEARCH = @TRUE
+        GOTO SKIP.SELECT
+    END 
+
+    CMD = 'SELECT UD.AVALARA WITH AVACERT_ID = "':CERT.ID:'"'
+    EXECUTE CMD CAPTURING MSG 
+    LOOP WHILE READNEXT AID DO 
+        READV AID.CERT.ID FROM AVAIFILE,AID,1 THEN 
+            IF FOUND.CERT THEN 
+                ADD.OUTPUT.TEXT = ('Cert with Duplicate Cert ID found in UD.AVALARA: ':AID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                * Sticking with first match.
+                CONTINUE
+            END 
+        END ELSE 
+            CONTINUE
+        END 
+        FOUND.CERT = (AID = CERT.ID)
+        IF FOUND.CERT THEN 
+            ADD.OUTPUT.TEXT = (('Cert found:':SPACE(2)):AID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        END 
+    REPEAT 
+
+SKIP.SELECT:
+    IF FOUND.CERT THEN 
+        * Build cert json from Customer Record if matched.
+        CERT.REG    =   FIELD (AID,'~',2)[1,2]
+        CERT.NUM    =   TRIM (FIELD (AID,'~',2)[3,99])
+    END ELSE 
+        IF NOT( EXEMPT.SEARCH ) THEN 
+            * Get Cert from API Call, to match on.
+            ADD.OUTPUT.TEXT = ((SPACE(2):'Attempting match on portal certificate.')) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            UD.AVA.GET.CERTIFICATE COMP.ID, CERT.ID, , RESP, ERROR.MESSAGE
+            IF (ERROR.MESSAGE <> '') THEN 
+                ADD.OUTPUT.TEXT = ("Error getting cert from API. UD.AVA.GET.CERTIFICATE") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            END ELSE 
+                ADD.OUTPUT.TEXT = ((SPACE(2):('No error accessing Portal.':SPACE(2):'Parsing Cert.'))) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                GOSUB PARSE.CERTIFICATE
+                IF C.DATA<1> THEN 
+                    ADD.OUTPUT.TEXT = ("API Cert ID: ":C.DATA<1>) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                    CERT.REG    =   C.DATA<4>
+                    ADD.OUTPUT.TEXT = ("cert.reg: ":CERT.REG) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                    CERT.NUM    =   C.DATA<5>
+                    ADD.OUTPUT.TEXT = ("cert.num: ":CERT.NUM) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                END 
+            END 
+        END ELSE 
+            * If a Region:ExemptNumber ID was provided.  Look in AVALARA_DATA.
+            IF CERT.ID THEN 
+                ADD.OUTPUT.TEXT = (("Region:ExemptNumber provided for lookup.":SPACE(2)):CERT.ID) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                CERT.REG    =   CERT.ID[1,2]
+                CERT.NUM    =   TRIM (CERT.ID[3,99])
+                
+            END ELSE 
+                *No data to look up.  Exit.
+                ADD.OUTPUT.TEXT = (("No data to lookup.":SPACE(2):"Exiting.")) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+                GOSUB FINISH
+            END 
+        END 
+
+    END 
+    C.CERT.CNT = DCOUNT(CUS.REC<33>,VM)
+    IF C.CERT.CNT = 0 THEN 
+        ADD.OUTPUT.TEXT = ("No certificates on customer record.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN
+    END 
+    
+    * get all certificates for customer.
+    FOR C.CERT.NO =   1 TO C.CERT.CNT    
+        * find the one cert we need to process.  Process it.
+        C.CERT.REG = CUS.REC<33,C.CERT.NO>
+        C.CERT.NUM = UPCASE(TRIM(CUS.REC<34,C.CERT.NO>))
+        * match Region first... no region match move on.
+        IF CERT.REG # C.CERT.REG THEN CONTINUE
+        * Correct for any case issues
+        IF C.CERT.NUM # CUS.REC<34,C.CERT.NO> THEN 
+            * Write back upcased, and trimmed Exemption number.
+            READVU C.CERT.NUM.TEMP.RECORD FROM CUSFILE, (CN), (34) THEN C.CERT.NUM.TEMP.RECORD<1,C.CERT.NO> = (C.CERT.NUM) ; WRITEV C.CERT.NUM.TEMP.RECORD ON CUSFILE, (CN), (34) ELSE C.CERT.NUM.TEMP.RECORD = '' ; C.CERT.NUM.TEMP.RECORD<1,(C.CERT.NO)> = (C.CERT.NUM) ; WRITEV C.CERT.NUM.TEMP.RECORD ON CUSFILE, (CN), (34)
+        END 
+        * match on exemption number
+        IF (UPCASE(TRIM(CERT.NUM))) = C.CERT.NUM THEN 
+            *Found
+            FOUND.CERT = @TRUE
+            EXIT
+        END 
+    NEXT C.CERT.NO 
+    
+    IF NOT( FOUND.CERT ) THEN 
+        *  Not found.  Return with no JSON.
+        ADD.OUTPUT.TEXT = (('Cert:':SPACE(2):'"'):CERT.NUM:('"':SPACE(2):'"'):CUS.REC<34>:'"') ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        ADD.OUTPUT.TEXT = ("Unable to locate matching certificate in customer certificates.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN
+    END 
+    
+    * Once we find a match in the above For Loop, c.cert.no is set to the position of that match.
+    * At this point we are not in a loop.
+    
+    C.CERT.REGION       =  (UPCASE(TRIM(CUS.REC<33,C.CERT.NO>)))
+    C.CERT.NUMBER       =  (UPCASE(TRIM(CUS.REC<34,C.CERT.NO>)))
+
+    AID =   CN:"~":C.CERT.REGION:C.CERT.NUMBER
+    READV EFF.DATE FROM AVAIFILE, (AID), (2) ELSE EFF.DATE = ''
+    IF NOT( EFF.DATE ) THEN 
+        EFF.DATE    =   DEF.EFF.DATE
+    END 
+    
+    * Skip any deleted or expired certificates.
+    *exp.date    =   cus.rec<172,c.cert.no>
+    * Expiring all certificates to clear portal.
+    EXP.DATE    =  20821
+    EXP.DATE   +=  0
+    IF NOT( EXP.DATE ) THEN 
+        ADD.OUTPUT.TEXT = ("No valid expiration date on customer rec.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        REALDATE DEFAULTEXPIRE, VAR.EXP.DATE
+        READV EXP.DATE FROM AVAIFILE, (AID), (3) ELSE EXP.DATE = (DEFAULTEXPIRE)
+        IF EXP.DATE = DEFAULTEXPIRE THEN 
+            ADD.OUTPUT.TEXT = ("No expiration recorded in UD.AVALARA.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        END 
+        * No expiration date on customer cert record, set it to match portal or default.
+        CUS.REC<172,C.CERT.NO> = EXP.DATE
+        READ NOTHING FROM AVAIFILE,AID THEN 
+            WRITEV (EXP.DATE) ON AVAIFILE, (AID), (3)
+        END 
+        * Write evaluated expiration date to customer.
+        READVU EXP.DATE.TEMP.RECORD FROM CUSFILE, (CN), (172) THEN EXP.DATE.TEMP.RECORD<1,C.CERT.NO> = (EXP.DATE) ; WRITEV EXP.DATE.TEMP.RECORD ON CUSFILE, (CN), (172) ELSE EXP.DATE.TEMP.RECORD = '' ; EXP.DATE.TEMP.RECORD<1,(C.CERT.NO)> = (EXP.DATE) ; WRITEV EXP.DATE.TEMP.RECORD ON CUSFILE, (CN), (172)
+
+    END 
+    IF INDEX(EFF.DATE,"/",1) THEN 
+        CEFD        =   ICONV(EFF.DATE,"D4/")
+    END ELSE 
+        CEFD        =   EFF.DATE
+    END 
+    IF INDEX(EXP.DATE,"/",1) THEN 
+        CEXD        =   ICONV(EXP.DATE,"D4/")
+    END ELSE 
+        CEXD        =   EXP.DATE
+    END 
+    
+    IF (CEXD <DATE()) OR (CEFD >CEXD) THEN 
+        ADD.OUTPUT.TEXT = ("Expired or invalid effective date on cert.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        * Return with no JSON.
+        RETURN
+    END 
+        
+    CUR.CERT = ''
+    
+    CUR.CERT<2>       =  OCONV(CEFD,"D-YMD[Z4,2,2]"):"T00:00:00"
+    CUR.CERT<3>       =  OCONV(CEXD,"D-YMD[Z4,2,2]"):"T00:00:00"
+    
+    * Is cert blank?  Use for future checking.
+    CERT.BLANK        =  LEN(TRIM(C.CERT.NUMBER)) = 0
+    UD.AVA.TAXCERT.IMG CN, CERT.NUMBER, CERT.FILENAME
+    CUR.CERT<4>       =  CERT.FILENAME
+    CERT.FILENAME     =  ""
+    CUR.CERT<5>       =  "true"
+    CUR.CERT<6>       =  C.CERT.NUMBER
+    EXEMPT.REASON     =  FIELD(CUS.REC<105,C.CERT.NO>,'=',1)
+    *Test for a Type other than G or I, Resale or Inducstrial/mfg
+    WRNG.REAS = (EXEMPT.REASON # "G") AND (EXEMPT.REASON # "I")
+    *Test for DEN Type.  DEN is allowed here.
+    WRNG.REAS = (WRNG.REAS) AND (EXEMPT.REASON # "DEN")
+    *Skip if Blank, NOT G, NOT I, NOT DEN.
+    SKIP.CERT = (CERT.BLANK OR WRNG.REAS)
+    IF C.CERT.REGION = "CO" AND EXEMPT.REASON = "DEN" THEN 
+    *Skip if DEN, but a City of Denver exemption exists.
+        SKIP.CERT = SKIP.CERT AND (CUS.REC<175,C.CERT.NO,1> = "DENVER")
+    END 
+    IF SKIP.CERT THEN 
+        ADD.OUTPUT.TEXT = ("Skipping cert based on skip criteria.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+        RETURN
+    END 
+    
+    BEGIN CASE 
+        CASE EXEMPT.REASON    =  "I"
+            CERT.REASON = "INDUSTRIAL PROD/MANUFACTURERS"
+
+        CASE EXEMPT.REASON    =  "G"
+            CERT.REASON = "RESALE"
+    END CASE 
+    CUR.CERT<7, 2> =  CERT.REASON
+      
+    CUR.CERT<8>      =  "TIN"
+    CUR.CERT<9>      =  BUS.NUM.TYPE
+    
+    * exposure zones.
+    LOCATE C.CERT.REGION IN E.REG<1> SETTING POS THEN 
+    END 
+    EXP.ZONE.NAME        =  E.NAMES<1, POS>
+        
+    CUR.CERT<10, 2> =  EXP.ZONE.NAME
+        
+START.JSON:
+    ADD.OUTPUT.TEXT = ("Starting JSON.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+    UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, "", "", 1
+    CERT.AM.COUNT = DCOUNT (CUR.CERT, AM)
+    FOR CERT.AM   =  1 TO CERT.AM.COUNT 
+        LAST.AM = (CERT.AM = CERT.AM.COUNT)
+        MV.CT = DCOUNT (CUR.CERT<CERT.AM>, VM)
+        IF MV.CT = 2 THEN 
+            IF (CUR.CERT<CERT.AM, 2>) THEN 
+                UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, CERT.HEAD<CERT.AM, 1>, "", 6
+                UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, CERT.HEAD<CERT.AM, 2>, CUR.CERT<CERT.AM, 2>, "", YES
+                UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, "", "", 2, LAST.AM
+            END 
+        END ELSE 
+            IF (CUR.CERT<CERT.AM>) THEN 
+                UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, CERT.HEAD<CERT.AM>, CUR.CERT<CERT.AM>, "", LAST.AM
+            END 
+        END 
+    NEXT CERT.AM 
+
+    UT.ADD.JSON NRJ.LEVEL, CERTREC.JSON, "", "", 2, YES
+
+END.JSON:
+    MSG.OUT = LOWER(CERTREC.JSON)
+    ADD.OUTPUT.TEXT = (MSG.OUT) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    ADD.OUTPUT.TEXT = ("JSON Ended.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+
+ RETURN
+***************************************************************************
+PARSE.CERTIFICATE:
+    
+    C.DATA = ''
+    CI.CT = @FALSE
+    UT.PARSE.JSON RESP, CERT.ITEMS, CERT.VALUES
+    CI.CT = DCOUNT (CERT.ITEMS,AM)
+    ADD.OUTPUT.TEXT = ("parsing ":CI.CT:" json items from the cert.") ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+    
+    FOR CITEM = 1 TO CI.CT 
+        IT.NAME = UPCASE(CERT.ITEMS<CITEM>)
+        IT.VAL  = CERT.VALUES<CITEM>
+        BEGIN CASE 
+            CASE IT.NAME = "ID"
+                C.DATA<1>  =   IT.VAL
+                ADD.OUTPUT.TEXT = ("ID: ":IT.VAL) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            CASE IT.NAME = "SIGNEDDATE" 
+                C.DATA<7>  =   IT.VAL
+            CASE IT.NAME = "EXPIRATIONDATE"
+                C.DATA<8>  =   IT.VAL
+            CASE IT.NAME = "EXEMPTIONNUMBER"
+                C.DATA<5>  =   IT.VAL
+                ADD.OUTPUT.TEXT = ("Exemption Number: ":IT.VAL) ; OUTPUT.BUFFER.COUNT += 1 ; IF OUTPUT.BUFFER = '' THEN OUTPUT.BUFFER = ADD.OUTPUT.TEXT ELSE OUTPUT.BUFFER := @AM:ADD.OUTPUT.TEXT
+            CASE IT.NAME = "EXEMPTIONREASON"
+                GOSUB PARSE.EXEMPTION.REASON
+            CASE IT.NAME = "TAXNUMBERTYPE"
+                C.DATA<6>  =   IT.VAL
+            CASE IT.NAME = "BUSINESSNUMBERTYPE"
+                IF NUM(IT.VAL) THEN 
+                    C.DATA<13> =   IT.VAL
+                    C.DATA<14> = ''
+                END ELSE 
+                    C.DATA<13> =   "20"
+                    C.DATA<14> =   IT.VAL
+                END 
+            CASE IT.NAME = "EXPOSUREZONE"
+                GOSUB PARSE.EXPOSURE.ZONE
+            CASE OTHERWISE
+                * Do nothing.
+        END CASE 
+    NEXT CITEM 
+        
+ RETURN
+***************************************************************************
+PARSE.EXEMPTION.REASON:
+    UT.PARSE.JSON IT.VAL, EX.ITEMS, EX.VALUES
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    EITEM.CT = DCOUNT (EX.ITEMS,AM)
+    FOR EITEM = 1 TO EITEM.CT 
+        EIT.NAME    = UPCASE (EX.ITEMS<EITEM>)
+        EIT.VAL     = EX.VALUES<EITEM>
+        IF EIT.NAME = "NAME" THEN 
+            IF EIT.VAL = "RESALE" THEN 
+                C.DATA<15> =   "G"
+            END ELSE 
+                IF EIT.VAL = "INDUSTRIAL PROD/MANUFACTURERS" THEN 
+                    C.DATA<15> = "I"
+                END 
+            END 
+        END 
+    NEXT EITEM 
+
+ RETURN
+**************************************************************************
+PARSE.EXPOSURE.ZONE:
+    VALID.EZONES = ''
+    UT.PARSE.JSON IT.VAL, EX.ITEMS, EX.VALUES
+*    sub::ut.parse.json (ex.data, ex.items, ex.values)
+    EITEM.CT = DCOUNT (EX.ITEMS,AM)
+
+    IF EITEM.CT AND NOT( VALID.EZONES ) THEN 
+        UD.AVA.EZONES VALID.EZONES
+    END 
+    FOR EITEM = 1 TO EITEM.CT 
+        EIT.NAME    = EX.ITEMS<EITEM>
+        EIT.VAL     = EX.VALUES<EITEM>
+        
+        IF UPCASE(EIT.NAME) = "NAME" THEN 
+            LOCATE EIT.VAL IN VALID.EZONES<2> SETTING VAL THEN 
+                C.DATA<4>  =   VALID.EZONES<1,VAL>
+                C.DATA<3>  =   "US"
+            END 
+        END 
+    NEXT EITEM 
+    
+ RETURN
+**************************************************************************
+***************************************************************************
+***************************************************************************
+***************************************************************************
+
+* checksum: 23704
+* last change: 12/23/2025 06:42:12pm
+* last compile: 10/11/2022 10:39:34am
+EXIT.IF.ERROR.MESSAGE: ***************************************************
+* exit method if there has been an error                                 *
+**************************************************************************
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE <> "" THEN
+        GOSUB EXIT.TO.CALLING.PROGRAM
+    END
+
+    RETURN
+ 
+EXIT.TO.CALLING.PROGRAM: *************************************************
+* exit the method entirely.  pops return stack until a return is         *
+* done to the calling subroutine.  this subroutine allows exit.method    *
+* and exit.sub to cleanly exit a subroutine or method even from inside   *
+* a subroutine called with a gosub                                       *
+**************************************************************************
+ 
+    $IFNDEF FIRST.INSTALL
+ 
+* auto-destroy object call
+    IF ASSIGNED(REGISTRY.SOURCE.ID) THEN
+        OBJECT.DESTROY.MINE.HANDLE = @AM:"UD.AVA.CERT.JSON"
+        UD.OBJECT.REGISTRY "", "DESTROY.MINE", OBJECT.DESTROY.MINE.HANDLE, "", REGISTRY.SOURCE.ID
+    END
+ 
+    $ENDIF
+ 
+EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK:
+    RETURN TO EXIT.TO.CALLING.PROGRAM.POP.RETURN.STACK
+ 
+CATCH.OBJECT.ERROR: ******************************************************
+* if there is an error display the error, clean up and exit              *
+**************************************************************************
+ 
+* if there's no error return
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF ERROR.MESSAGE = "" THEN
+        RETURN
+    END
+ 
+    UD.SHOW.OBJECT.ERROR ERROR.MESSAGE, 1, 1
+    PRINT
+ 
+    GOSUB EXIT.TO.CALLING.PROGRAM
+ 
+    RETURN
+ 
+OBJECT.ERROR.LOGGING: ****************************************************
+* object errror logging                                                  *
+**************************************************************************
+ 
+    RETURN
+ 
+LABEL.GOSUB.ROUTINE: *****************************************************
+* gosub to a label based on the error throw variable                     *
+**************************************************************************
+ 
+* initialize error throw variables
+    IF UNASSIGNED(ERROR.MESSAGE) THEN
+        ERROR.MESSAGE = ""
+    END
+ 
+    IF UNASSIGNED(ERROR.THROW) THEN
+        ERROR.THROW = ""
+    END
+ 
+* if the error throw isn't active return
+    IF ERROR.THROW = "" THEN
+        RETURN
+    END
+ 
+* if the program label list isn't defined build it
+    IF UNASSIGNED(PROGRAM.LABEL.LIST) THEN
+        PROGRAM.LABEL.LIST = "FINISH,INIT,PREP.FILES,PROC.CERT,SKIP.SELECT,START.JSON,END.JSON,PARSE.CERTIFICATE,PARSE.EXEMPTION.REASON,"
+        PROGRAM.LABEL.LIST := "PARSE.EXPOSURE.ZONE,EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM"
+        PROGRAM.LABEL.LIST = CHANGE(PROGRAM.LABEL.LIST,",",@AM)
+    END
+ 
+* find the pointer to the error throw routine in the label index
+    LOCATE ERROR.THROW IN PROGRAM.LABEL.LIST SETTING ERROR.THROW.PTR ELSE
+        CRT "ERROR: Throw to Invalid label '":ERROR.THROW:"'"
+        CRT "Error Message: ":ERROR.MESSAGE
+        RETURN
+    END
+ 
+* do a gosub to the associated label
+    IF ERROR.THROW.PTR >= 1 AND ERROR.THROW.PTR <= 10 THEN
+        ON ERROR.THROW.PTR GOSUB FINISH,INIT,PREP.FILES,PROC.CERT,SKIP.SELECT,START.JSON,END.JSON,PARSE.CERTIFICATE,PARSE.EXEMPTION.REASON,PARSE.EXPOSURE.ZONE
+    END
+    IF ERROR.THROW.PTR >= 11 AND ERROR.THROW.PTR <= 12 THEN
+        ON ERROR.THROW.PTR - 10 GOSUB EXIT.IF.ERROR.MESSAGE,EXIT.TO.CALLING.PROGRAM
+    END
+ 
+    RETURN
+ 
+LOAD.OBJECT.SUBROUTINE.VARIABLES: *****************************************
+* handy object-enabled subroutine variables                               *
+***************************************************************************
+    ERROR.MESSAGE = ""
+    CURRENT.OBJECT.NAME = "UD.AVA.CERT.JSON"
+    CURRENT.METHOD.NAME = "MAIN"
+    CURRENT.COMPLETE.NAME = "UD.AVA.CERT.JSON"
+    CURRENT.SUBROUTINE.NAME = "UD.AVA.CERT.JSON"
+ 
+    RETURN

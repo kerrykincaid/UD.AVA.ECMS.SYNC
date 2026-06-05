@@ -1,0 +1,8 @@
+          SUBROUTINE
+** Version# 0.0001[1] - 09/30/2019 - 02:38pm - KK05718 - eclipse
+
+          FORM.RUN 'AVA.CHK.REPORT'
+
+          RETURN
+
+!KK05718~09/30/19~14:38

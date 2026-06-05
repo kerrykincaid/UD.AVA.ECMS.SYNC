@@ -1,0 +1,101 @@
+          SUBROUTINE  (SDATE,EDATE)
+** Version# 0.0001[3] - 05/04/2021 - 03:36pm - KK05718 - eclipse
+*** V0.0001 Change - Custom Coding 050421 - 05/04/2021 - KK05718 - eclipse
+** Copied from BP AVA.TAX.PH.COMMIT Version# 12 - 09/10/2020 - 02:59pm - AREYES - main
+          IF UNASSIGNED(SDATE) THEN RETURN
+          IF UNASSIGNED(EDATE) THEN RETURN
+
+
+          INCLUDE  CC AVA.EQUATES
+          GOSUB INIT
+          GOSUB SELECT.CRS
+          GOSUB ADJUSTED.CRS
+
+EXIT.HERE:
+          RETURN
+*-------------------------------------------------------------------------*
+*-------------------------------------------------------------------------*
+INIT:
+
+          SDATE =  ICONV(SDATE,"D4/")
+          EDATE =  ICONV(EDATE,"D4/")
+          BRCHS =  SECURITY<9>
+          SEND.ADJ = YES
+          READ     AVA.OPTS FROM CTRLFILE,'AVALARA.OPTIONS' ELSE AVA.OPTS = ''
+
+          IF TRIM(SEND.ADJ) # '' AND TRIM(AVA.OPTS<17>) # '' THEN
+             GL.ADJ.ACC = AVA.OPTS<17>
+          END ELSE  GL.ADJ.ACC = ''
+
+          UT.OPEN.FILE 'MH',MHFILE,ERR.MSG, YES
+          IF ERR.MSG THEN RETURN TO EXIT.HERE
+
+          RETURN
+*-------------------------------------------------------------------------*
+SELECT.CRS: * Select the Cash Receipts that hand any adjustment on the
+            * specified GL account.
+          PH.STATUS 'Selecting cash receipts...'
+          MESS = JLI.SELECT(SDATE,EDATE,BRCHS,'2')
+          READLIST SEL.CRS ELSE SEL.CRS = ''
+
+          RETURN
+*-------------------------------------------------------------------------*
+ADJUSTED.CRS: * Submit all Cash Receipts that have adjustments
+                     * in SEL.CRS to Avalara.
+          MORE.DATA = YES
+          CCAT = 0
+          LOOP WHILE MORE.DATA
+             REMOVE AR.ID FROM SEL.CRS SETTING MORE.DATA
+             READ ARREC FROM ARFILE,AR.ID ELSE CONTINUE
+             GL.IDS         = RAISE(FIELDS(ARREC<4>,'~',2))
+             * Check for non-numeric GL IDs: Strip GL IDs from ARREC<4>,
+             * test each element is numeric, confirm that all were numeric
+             NUM.GL.IDS     = NUMS(GL.IDS)
+             ALL.NUM.GL.IDS = MINIMUM(NUM.GL.IDS)
+             ADJ.AMT        = 0
+             CR.DATE        = ARREC<3,1>
+             IF NOT(ALL.NUM.GL.IDS) THEN CONTINUE
+             LOCATE GL.ADJ.ACC IN GL.IDS<1> SETTING NADA THEN
+                GL.IDS.CNT = DCOUNT(GL.IDS,AM)
+                * Start from 2 since 1 is referencing the CR
+                FOR ORD.POS = 2 TO GL.IDS.CNT
+                   LOCATE GL.ADJ.ACC IN GL.IDS<ORD.POS> SETTING POS THEN
+                      ID      = FIELD(ARREC<2,ORD.POS>,'.',2,2)
+                      OID     = FIELD(ID,'.',1)
+                      INVN    = FIELD(ID,'.',2)+0
+                      ADJ.AMT = 0
+                      GL.ADJ.CNT = DCOUNT(ARREC<5,ORD.POS>,SVM)
+                      FOR GL.ACC = POS TO GL.ADJ.CNT
+                         ADJ.AMT += ARREC<5,ORD.POS,GL.ACC>
+                      NEXT GL.ACC
+                      IF ADJ.AMT+0 = 0 THEN CONTINUE
+                      ADJ.AMT = OCONV(ADJ.AMT,'MR2')
+                      GOSUB REPORT.ONE.CR
+                      CCAT   += 1
+                   END
+                NEXT ORD.POS
+             END
+          REPEAT
+
+          RETURN
+*-------------------------------------------------------------------------*
+REPORT.ONE.CR: * Take the document in OID and make a remote call to
+               * Avalara to commit the Adjustment.
+          RECORD.ID = ''
+          RECORD.DATA = ''
+          MATREAD LED FROM LEDFILE,OID ELSE RETURN
+          LOCATE INVN IN LED(8)<1> SETTING GEN ELSE RETURN
+
+          RECORD.ID         =  AR.ID:"~":ID
+          RECORD.DATA<-1>   =  AR.ID
+          RECORD.DATA<-1>   =  ID
+          RECORD.DATA<-1>   =  CR.DATE
+          RECORD.DATA<-1>   =  ADJ.AMT
+
+          WRITE RECORD.DATA ON MHFILE,RECORD.ID
+
+
+          RETURN
+*-------------------------------------------------------------------------*
+*-------------------------------------------------------------------------*
+!KK05718~05/04/21~15:36
