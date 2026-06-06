@@ -1,0 +1,571 @@
+    ph.args drpt
+
+**************************************************************************
+* Subroutine to EMAIL users when transfers are left open.
+*   Using TRACKING.LOG file.
+**************************************************************************
+    program.name    =   "UD.PH.XOPEN.MSG"
+    program.title   =   "Xfer Open Notification"
+
+    if not (phantom.proc) {
+        sub::window ("", "", 78, 21, 3, "", "Xfer OOS Messaging")
+    }
+
+    initialize
+****
+    *check.for.logoff
+    *forever {
+        
+        select.and.deliver
+        *  Short circuit to finish.  Scheduled task rather
+        * than long running phantom.
+        finish
+
+        *check.for.logoff
+        if sleep_time > 120 {
+            till.time = time() + sleep_time
+            till.time = oconv(till.time,'MTH')
+            message = "Waiting till ":till.time:"..."
+            status.monitor::add.status (message)
+        }{
+            message = "Waiting..."
+        }
+        thread::set.status (message)
+        sub::write.last.action (output.buffer, program.name)
+        
+        sleep = each (1, sleep_time, 2) {
+            sleep 2
+            check.for.logoff
+        }
+        with setting {
+            ::set.tag ("xfer.oos")
+            ::refresh
+        }
+    *}
+    
+**************************************************************************    
+finish: 
+    ledger::locks.off
+    thread::delete.register
+    phst.msg = thread::thread.pid:" Phantom terminating"
+
+    log.msg
+    sub::write.last.action (output.buffer, program.name)
+
+    sleep 3
+    
+    if phantom.proc {
+        sub::send.message ("Phantom", user.id, phst.msg)
+    }{
+        print "Press <Return> to continue."
+        inp a
+        sub::window.close
+    }
+    exit.sub
+
+**************************************************************************   
+ check.for.logoff: ********************************************************
+* check for a logoff request; UD.CONTROL program.name.THREAD.REGISTER 21 *
+**************************************************************************
+    logoff.requested = thread::request.logoff
+    logoff.requested = logoff.requested | (!enabled)
+
+    cases {
+
+* check for end of day log off
+        case auto.logoff & time() >= auto.off.time
+            message = "Stopping ":program.name:" for end of day"
+
+* check for a request to log off
+        case logoff.requested
+            message = "Stopping ":program.name:" as requested"
+            
+* no message
+        other 
+            message = ""
+    }
+    return.ifnull message
+
+    phst.msg = message
+    log.msg
+    sleep 3
+    
+    if phantom.proc {
+        thread::delete.register
+    }
+
+    sleep 3
+
+    goto finish
+    
+    return
+
+************************************************************************** 
+select.and.deliver: 
+    ***  select open status transfers for DC.
+    *** Evaluate transfer for whom to send notification.
+    
+    run.msg =   " Stage 1:  Select, filter on minimum criteria."
+    log.msg 
+
+    xf.list~~~
+    xf.list.ct~
+    xfer.oid.ct~
+    
+    dc.br = each.am (enabled.brs, ebr.idx) {
+        ** Select only OPEN transfers.
+        cmd         =   select_1
+        change (cmd,'$$dc$$',dc.br)
+        change (cmd,'$$cutoff$$',cutoff.date)
+        
+        phst.msg =  " Selecting open transfer records from ":dc.br:"..."
+        log.msg
+        run.msg =   cmd
+        log.msg
+        sleep 3
+        *msg         =   exec (cmd)
+        execute cmd capturing msg
+        selected.ids,xfcount  =   build.active.list ()
+        
+        *-----------
+        ** Select statement selects and validates.  Any returned record will send message.
+        run.msg = xfcount:" transfers selected."
+        log.msg
+        *-----------
+        
+        xf.rec~~~
+        xf.writer~~~
+        xf.writer.email~~~
+        xf.manager~~~
+        xf.id~~~
+        xf.curr.br      =   '@@@'
+        xf.rbr.ct~
+
+        xf.id = each.am (selected.ids, xf.idx) {
+            run.msg =   xf.id
+            log.msg
+            
+            xf.rec      =   fetch (oqfile,xf.id)
+            xfer.oid    =   field(xf.id,'.',1)
+            xfer.date   =   field(xf.id,'.',2)
+            xfer.gid    =   field(xf.id,'.',3)
+            
+            xfer.writer =   xf.rec<9>
+            xfer.30     =   fetch (ledfile,xfer.oid,30)
+            xfer.brs    =   fetch (ledfile,xfer.oid,2)
+            xfer.rcvbr  =   xlate.vm ('RX',xfer.30,xfer.brs)
+            xfer.rcvbr  =   xfer.rcvbr<1,1,2>
+            
+            if xfer.rcvbr <> xf.curr.br {
+                * New Receive Branch
+                xf.curr.br = xfer.rcvbr
+                * Already sorted by Receive Branch, just drop on end and use count.
+                xf.list<1>              =   add.unique.vm (xfer.rcvbr,xf.list.ct)
+                xfer.manager            =   fetch (terrfile,xfer.rcvbr,33)
+                to.br.mgr.nm            =   fetch(inifile,xfer.manager,3)
+                to.br.mgr.em            =   fetch(inifile,xfer.manager,55)
+                * Branch Manager
+                xf.list<2,xf.list.ct>   =   xfer.manager
+                xf.list<3,xf.list.ct>   =   to.br.mgr.nm
+                xf.list<4,xf.list.ct>   =   to.br.mgr.em
+            }
+            * Added to current branch and new branch.
+            ** Setting ptr just in case the add.sorted does NOT set it.
+            add.unique.ptr  =   1
+                * Order/Ship Date
+            xfer.shipdt             =   xf.list<6,xf.list.ct>
+            xfer.shipdt             =   add.sorted.sm (xfer.date, xfer.oid.ct)
+            xf.list<6,xf.list.ct>   =   xfer.shipdt
+                * Transfer ID
+            *xf.list<5,xf.list.ct>    =   xfer.date:" ":xfer.oid
+            ins xfer.oid before xf.list<5,xf.list.ct,add.unique.ptr>
+                * From Br
+            xf.list<7,xf.list.ct>   =   dc.br
+                * Writer
+            *xf.list<8,xf.list.ct,add.unique.ptr>    =   xfer.oid:" ":xfer.writer
+            ins xfer.oid:" ":xfer.writer before xf.list<8,xf.list.ct,add.unique.ptr>
+            em.writer       =   set.ifnot.in (xfer.writer,phantom.users)
+            writer.em       =   fetch(inifile,xfer.writer,55)
+            writer.nm       =   fetch(inifile,xfer.writer,3)
+            em.writer       =   set.if (em.writer & (writer.em))
+            if em.writer {
+                *xf.list<9,xf.list.ct,add.unique.ptr>     =   writer.nm
+                ins writer.nm before xf.list<9,xf.list.ct,add.unique.ptr>
+                *xf.list<10,xf.list.ct,add.unique.ptr>    =   writer.em
+                ins writer.em before xf.list<10,xf.list.ct,add.unique.ptr>
+            }{
+                *xf.list<9,xf.list.ct,add.unique.ptr>~~~
+                ins "" before xf.list<9,xf.list.ct,add.unique.ptr>
+                *xf.list<10,xf.list.ct,add.unique.ptr>~~~
+                ins "" before xf.list<10,xf.list.ct,add.unique.ptr>
+            }
+        }
+    }
+
+    run.msg =   " *** Stage 1 complete"
+    log.msg
+
+    if xf.list.ct > 0 {
+        send.emails.from.list
+    }
+    run.msg =   " *** Stage 2 complete"
+    log.msg
+
+return
+***************************************************************************
+***************************************************************************
+send.emails.from.list:
+    run.msg =   " Stage 2: Send email to Branch Manager or Writer."
+    log.msg
+    
+    *  A single email is sent to each receiving branch containing every Transfer
+    * plus details that matches the criteria.
+    rcv.br  =   each.vm (xf.list<1>, br.ctr) {
+        br.xfer.list~~~
+        email.sent~
+        xfer.number =   each.sm (xf.list<5,br.ctr>, xfer.ctr) {
+            dc.br       =   xf.list<7,br.ctr,xfer.ctr>
+            xfer.date   =   xf.list<6,br.ctr,xfer.ctr>
+            xfer.writer =   xf.list<9,br.ctr,xfer.ctr>
+            xfer.line   =   (dc.br:@svm:xfer.number:@svm:xfer.date:@svm:xfer.writer)
+        
+            ifnot br.xfer.list {
+                br.xfer.list        =   xfer.line
+            }{
+                br.xfer.list<-1>    =   xfer.line
+            }
+            build.email.to
+        }
+        
+        build.email.message
+        
+        with xfer.email {
+
+            if use.override.email {
+                email_to    =   override_email
+            }{
+                email_to    =   to.email
+            }
+            
+            ::set.email.type ("HTML")
+            
+            ::set.to.address (email_to)
+            
+            ::add.cc (email.CC)
+            
+            ::add.bcc (email.BCC)
+            
+            ::set.from.address (email_from)
+
+            ::set.subject (email_subject)
+
+            ::set.message (email_body)
+
+            ::send
+
+            if have.error {
+                run.msg =   "    Error sending email to ":'"':email_to:'"':": Error: ":'"':error.message:'"'
+                log.msg
+                clear.error
+            }{
+                run.msg =   "  Email sent for Xfer: ":xfer.number:" ":to.email
+                log.msg
+                email.sent~~
+            }
+            
+            jq.id~~~
+            
+            if email.sent {
+                * Do somethinng if emaill is sent... follow  up action.
+                null
+            }{
+                run.msg =   "  Email NOT sent for Xfer: ":xfer.number:" ":to.email
+                log.msg
+            }
+        }
+    }
+return    
+***************************************************************************
+***************************************************************************
+build.email.to:
+    
+    to.email        =   xf.list<3,br.ctr>:"<":xf.list<4,br.ctr>:">;"
+    writer.em       =   each.sm (xf.list<10,br.ctr>, writer.ctr) {
+        to.email   :=   xf.list<9,br.ctr,writer.ctr>:"<":writer.em:">;"
+    }
+    
+return
+**************************************************************************  
+build.email.message:
+
+    email_body      =   email_body_txt
+    email_subject   =   email_subj_txt
+
+    change (email_subject,'$$dc_br$$',dc.br)
+    * change (email_body,'$$transfernumber$$',xfer.number)
+    * change (email_body,'$$shipbr$$',jq.fr.br)
+    * change (email_body,'$$tobr$$',jq.to.br)
+    * change (email_body,'$$writer$$',jq.writer)
+    table.data~~~
+    table.row~~~
+    xfer.line =   each.am (br.xfer.list, line.idx) {
+        *run.msg = xfer.line
+        *log.msg
+        table.row   =   '<tr><td  style="text-align: center">':change(xfer.line,@svm,'</td><td style="text-align: center">'):'</td></tr>':@am
+        table.data :=   table.row
+    }
+    *run.msg =   table.data
+    *log.msg
+    *change (email_body,'$$pnlist$$',change(change(jq.pns,svm,char(9)),vm,am))
+    * run.msg =   email_body
+    * log.msg
+    change (email_body,'$$xferlist$$',table.data)
+    *run.msg =   email_body
+    *log.msg
+
+    return
+***************************************************************************
+section logging:     **********************************************************
+***************************************************************************
+log.msg: * log message to all locations.
+    
+    * PHST.MSG = PHANTOM MESSAGE, STATUS MONITOR, BUFFER LOG
+    if phst.msg {
+        text = (phst.msg)
+        status.monitor::add.status (text)
+        
+        if phantom.proc {
+            with thread {
+                *write phst.msg on phstfile, pid$
+                thread::set.status (phst.msg)
+            }
+        }{
+            print phst.msg "L#70"
+        }
+        buffer (text)        
+    }
+    * RUN.MSG = STATUS.MONITOR, BUFFER LOG
+    if run.msg {
+        z.ct = dcount(run.msg,@am)
+        prt = each.am (run.msg) {
+            if not (phantom.proc) {
+                print run.msg<prt> "L#70"
+            }
+        }
+        change (run.msg,@am,', ')
+        text = (run.msg)
+        status.monitor::add.status (text)
+        buffer (text)
+    }
+    * PRT.MSG = BUFFER LOG
+    if prt.msg {
+        text = (prt.msg)
+        buffer (text)
+        if is_debug {
+            status.monitor::add.status (text)
+        }
+    }
+    phst.msg~~~
+    run.msg~~~
+    prt.msg~~~
+    
+    return
+   
+***************************************************************************
+section startup routines: *************************************************
+***************************************************************************
+initialize:
+***
+* Start up
+***
+    buffer.clear ()
+* Status Monitor
+    status.monitor = new (status.monitor)
+    with status.monitor {
+        ::set.name ("XF.STATUS")
+        ::set.title ("Xfer Processing Status")
+    }
+* log variables
+    phst.msg~~~
+    run.msg~~~
+    prt.msg~~~
+    
+    today   =   date()
+    start_date~~~
+    stop_date~~~
+    now     =   time()
+    last.run.rec~~~
+    last.date~~~
+    last.time~~~
+    run.count~
+    verf.br~~~
+
+    em.writer~~~
+    
+    *Aging bucket settings
+    aod~~~
+    agd =   today
+    inq.brs~~~
+    lme~~~
+    xtype~~~
+    
+* last run
+    * read last date and time of last sync.
+    sub::read.last.action (last.date, program.name,@false,1)
+    sub::read.last.action (last.time, program.name,0,2)
+    sub::read.last.action (run.count, program.name,0,3)
+    *Reformat for internal use.
+    if last.date {
+        last.date = iconv (last.date, "D4/")
+        last.time = iconv (last.time, "MTHS")
+    }
+    
+    if last.date != today {
+        run.count   =   0
+    }
+
+    err.msg~~~
+    phst.msg~~~
+    run.msg~~~
+    prt.msg~~~
+    
+    lock.ledger~~
+    wait.for.locks~~
+    time.out.time   =   5
+    ledger.sleep    =   .5
+    
+    
+* objects
+    setting     =   new (setting, "XFER.UTILS.SETUP")
+    manager     =   new (file.manager)
+    ledger      =   new (ledger)
+    entity      =   new (entity)
+    cust.class  =   new (cust.class)
+    thread      =   new (thread) 
+    xfer.email  =   new (email)
+    
+    with ledger {
+        ::locks (lock.ledger)
+        ::wait.for.locks (wait.for.locks, time.out.time, ledger.sleep)
+    }
+
+*  Variables
+    
+    with setting {
+        ::set.tag ("xfer.open.msg")
+    
+        with ::enabled {
+            enabled         = :: ("Enabled", @false)
+            is_debug        = :: ("debug",@false)
+            auto.logoff     = :: ("auto.logoff", @true)
+            always.bm.em    = :: ("always.notify.mgr", @false)
+        }
+        with ::get {
+            log_user        = :: ("log_user")
+            reason$         = :: ("reason_msg")
+            u_name          = :: ("u_name")
+            auto.off.time   = :: ("auto.off.time", "21:00"); * 9pm default.
+            sleep_time      = :: ("SleepTime", 1800); * 30 minute default.
+            select_1        = :: ("select_1", 'SELECT ORDER.QUEUE WITH TYPE = 5 AND XFER.SHIP.RECV = "SX" AND SHIP_BR = "$$dc$$"')
+            cutoff.date     = :: ("cutoff.date", 'MO/DA/YR')
+            cutoff.date = realdate (cutoff.date)
+            cutoff.date = oconv(cutoff.date,'D4/')
+            email_from      = :: ("FromEmailAddress","wizard@morsco.com")
+            email_subj_txt  = :: ("EmailSubject","Xfer Open Status Notification")
+            email_body_txt  = :: ("OpenStatusEmailBody")
+            change (email_body_txt, "\", @am)
+            override_email  = :: ("override.email")
+            use.override.email = set.if (override_email)
+            
+            pn.header       = :: ("pn.header")
+            change (pn.header, "\", char(9))
+            change (email_body_txt, "$$pnheader$$", pn.header)
+        }
+        with ::get.comma.list {
+            enabled.brs     = :: ("enabled.brs")
+            phantom.users   = :: ("phantom.users")
+            email.CC        = :: ("EmailCC")
+            email.BCC       = :: ("EmailBCC")
+            **  For now these must be a literal email.  Future dev could be to accomodate
+            ** the @WRITER, @SLSMAN, @Customer, @AUTO from triggers to determine emails.
+
+        }
+    }
+    
+    * enabled =   (enabled_unrec | enabled_recno | enabled_freight | enabled_closed)
+    ifnot enabled {
+        run.msg = u_name:" is not enabled!"
+        log.msg
+        finish
+    }
+    
+    run.msg =   "Auto off time:  ":auto.off.time
+    log.msg
+    iconv (auto.off.time, "MTH")
+    
+    *run.count++
+        
+    prt.msg = (oconv(today,"D4/"))
+    log.msg
+    prt.msg = (oconv(now,"MTHS"))
+    log.msg
+    * prt.msg = (run.count)
+    * log.msg
+    
+    * register this phantom
+    with thread {
+
+        ::set.name (program.name, program.title)
+        ::add.register
+
+        ::set.status ("Starting Up")
+        sleep 3
+
+    * if there's another instance of this phantom running we don't want to start up another
+        phantom.count = ::get.pid.count
+        cases {
+            case phantom.count = 2
+                bad.text = "Another instance of this phantom is currently running"
+            case phantom.count > 2
+                bad.text = phantom.count:" instances of this phantom is currently running"
+            other
+                bad.text = ""
+        }
+
+        ifnotnull bad.text {
+            phst.msg = "Cannot initialize: ":bad.text
+            log.msg
+            finish
+        }
+    }
+    sleep 5
+    
+* files
+    with manager::open {
+        
+        run.msg     =   "Open Order Queue file"
+        log.msg
+        oqfile    =   :: ("ORDER.QUEUE")
+      
+        if have.error {
+            run.msg = "Error opening ":oqfile:".  ":vm:err.msg
+            log.msg
+            finish
+        }
+    }
+    
+    log_user = fetch (inifile,log_user,0)
+    if (!log_user) | (user.id[1,3] =   "WIZ") {
+        log_user    =   user.id
+    }
+
+    * last.run.rec<1> = oconv (today, 'D4/')
+    * last.run.rec<2> = oconv (now, 'MTHS')
+    * sub::write.last.action last.run.rec, dvr.name
+
+ return
+**************************************************************************
+
+* checksum: 45914
+* last change: 05/30/2026 12:20:01pm
+* last compile: 04/10/2023 05:46:58pm
